@@ -4,7 +4,8 @@ Installed tools, bots, and GitHub Apps across the `cheunjm` workspace.
 
 | Tool | Type | Purpose | Repos | Status | Installed |
 |------|------|---------|-------|--------|-----------|
-| Greptile | GitHub App (AI Review) | AI-powered PR code review | All | 🔜 Pending | - |
+| [Greptile](https://greptile.com) | GitHub App (AI Review) | AI-powered PR code review | All | ✅ Active | 2026-03-05 |
+| [arami-openclaw-bot](https://github.com/apps/arami-openclaw-bot) | GitHub App (Bot) | Bot commits for automation | All | ✅ Active | 2026-03-05 |
 
 ---
 
