@@ -1,0 +1,39 @@
+name: Notify on Merge
+
+on:
+  workflow_call:
+    secrets:
+      SLACK_BOT_TOKEN:
+        required: true
+    inputs:
+      slack_channel:
+        description: 'Slack channel ID to post merge notification'
+        required: true
+        type: string
+      repo_label:
+        description: 'Human-readable repo name for the notification'
+        required: true
+        type: string
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get commit info
+        id: info
+        run: |
+          echo "message=$(git log -1 --pretty=format:'%s')" >> $GITHUB_OUTPUT
+          echo "author=$(git log -1 --pretty=format:'%an')" >> $GITHUB_OUTPUT
+          echo "sha=$(git log -1 --pretty=format:'%h')" >> $GITHUB_OUTPUT
+
+      - name: Post to Slack
+        run: |
+          curl -s -X POST https://slack.com/api/chat.postMessage \
+            -H "Authorization: Bearer ${{ secrets.SLACK_BOT_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"channel\": \"${{ inputs.slack_channel }}\",
+              \"text\": \"✅ *${{ inputs.repo_label }} merge 완료*\n• \`${{ steps.info.outputs.sha }}\` — ${{ steps.info.outputs.message }}\n• 작성자: ${{ steps.info.outputs.author }}\n• <https://github.com/${{ github.repository }}/commit/${{ github.sha }}|커밋 보기>\"
+            }"

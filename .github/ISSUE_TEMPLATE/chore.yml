@@ -1,0 +1,25 @@
+name: Chore
+description: Maintenance, refactoring, CI, docs, or infrastructure work
+labels: ["chore"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What needs to be done and why?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: type
+    attributes:
+      label: Type
+      options:
+        - Refactor
+        - CI / Workflows
+        - Dependencies
+        - Documentation
+        - Infrastructure
+        - Other
+    validations:
+      required: true
