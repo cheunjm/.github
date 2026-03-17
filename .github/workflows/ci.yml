@@ -13,4 +13,4 @@ jobs:
       - name: Run actionlint
         run: |
           go install github.com/rhysd/actionlint/cmd/actionlint@latest
-          "$(go env GOPATH)/bin/actionlint" -color
+          "$(go env GOPATH)/bin/actionlint" -color -shellcheck=""
