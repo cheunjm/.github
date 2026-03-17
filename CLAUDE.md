@@ -25,6 +25,10 @@ When working on any `cheunjm` repo and you notice:
 
 Ask Jace before adding or changing defaults — these affect all repos.
 
+## Verification
+
+After implementing changes, always run the test/verification steps from the plan before committing or opening a PR. After merging, verify the changes work on the default branch when possible. This includes running workflows locally (e.g. `act`), validating YAML syntax, and testing that calling repos can reference updated workflows. Do not treat verification as optional or skip it.
+
 ## Reusable Workflows
 
 Other repos call these via `uses: cheunjm/.github/.github/workflows/{name}.yml@main`. Available:
