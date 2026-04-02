@@ -1,2 +1,2 @@
 # .github
-cheunjm workspace — default templates, tools registry
+Arami-Works workspace — default templates, tools registry

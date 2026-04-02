@@ -3,6 +3,6 @@
 BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || true)
 if [ "$BRANCH" = "master" ] || [ "$BRANCH" = "main" ]; then
   echo "❌ Direct commits to $BRANCH are blocked. Use a worktree."
-  echo "   See: https://github.com/cheunjm/conventions/blob/main/git.md#branch-protection"
+  echo "   See: https://github.com/Arami-Works/conventions/blob/main/git.md#branch-protection"
   exit 1
 fi
