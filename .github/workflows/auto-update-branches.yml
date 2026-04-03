@@ -17,6 +17,6 @@ jobs:
             gh api \
               --method PUT \
               "repos/$GITHUB_REPOSITORY/pulls/$pr/update-branch" \
-              -f update_method="merge" \
+              -f update_method="rebase" \
               2>&1 || echo "  Skipped (already up to date or conflict)"
           done
