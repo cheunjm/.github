@@ -1,2 +1,2 @@
 # .github
-Arami-Works workspace — default templates, tools registry
+aramiworks workspace — default templates, tools registry

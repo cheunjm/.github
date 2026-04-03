@@ -2,4 +2,4 @@
 ".github": patch
 ---
 
-chore: migrate org references from cheunjm to Arami-Works
+chore: migrate org references from cheunjm to aramiworks
