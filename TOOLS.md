@@ -1,6 +1,6 @@
-# Arami-Works Dev Tools Registry
+# aramiworks Dev Tools Registry
 
-Installed tools, bots, and GitHub Apps across the `Arami-Works` workspace.
+Installed tools, bots, and GitHub Apps across the `aramiworks` workspace.
 
 | Tool | Type | Purpose | Repos | Status | Installed |
 |------|------|---------|-------|--------|-----------|
