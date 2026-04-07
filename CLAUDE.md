@@ -43,4 +43,5 @@ Other repos call these via `uses: aramiworks/.github/.github/workflows/{name}.ym
 | `claude-db-migration.yml` | Migration file changes |
 | `auto-update-branches.yml` | Push to default branch (rebases open PRs) |
 | `auto-resolve-conflicts.yml` | After auto-update-branches (posts `@claude` on conflicting PRs) |
+| `claude-greptile-response.yml` | Greptile review submitted (auto-triage + fix) |
 | `notify-merge.yml` | Push to default branch (parameterized: `slack_channel`, `repo_label`) |
