@@ -41,4 +41,6 @@ Other repos call these via `uses: aramiworks/.github/.github/workflows/{name}.ym
 | `claude-changelog.yml` | PR merged |
 | `claude-dependency-check.yml` | Dependency file changes |
 | `claude-db-migration.yml` | Migration file changes |
+| `auto-update-branches.yml` | Push to default branch (rebases open PRs) |
+| `auto-resolve-conflicts.yml` | After auto-update-branches (posts `@claude` on conflicting PRs) |
 | `notify-merge.yml` | Push to default branch (parameterized: `slack_channel`, `repo_label`) |
