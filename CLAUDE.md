@@ -36,10 +36,6 @@ Other repos call these via `uses: aramiworks/.github/.github/workflows/{name}.ym
 | Workflow | Trigger |
 |----------|---------|
 | `claude.yml` | `@claude` mentions in issues/PRs |
-| `claude-code-review.yml` | PR opened/updated |
-| `claude-pr-description.yml` | PR opened |
-| `claude-changelog.yml` | PR merged |
-| `claude-dependency-check.yml` | Dependency file changes |
 | `claude-db-migration.yml` | Migration file changes |
 | `auto-update-branches.yml` | Push to default branch (rebases open PRs) |
 | `auto-resolve-conflicts.yml` | After auto-update-branches (posts `@claude` on conflicting PRs) |
