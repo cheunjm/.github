@@ -70,12 +70,6 @@ jobs:
       needs.resolve-pr.outputs.has_pr == 'true' &&
       github.event.workflow_run.name == 'CI' &&
       (inputs.format_fix_command != '' || inputs.lint_fix_command != '')
-    permissions:
-      contents: write
-      pull-requests: write
-      packages: read
-      id-token: write
-      actions: read
     steps:
       - name: Generate GitHub App token
         id: app-token
