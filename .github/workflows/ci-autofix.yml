@@ -30,6 +30,9 @@ on:
         required: true
       CLAUDE_ARAMI_PRIVATE_KEY:
         required: true
+      PKG_READ_TOKEN:
+        required: false
+        description: "PAT with read:packages on @aramiworks for npm install. Falls back to App token if unset."
 
 jobs:
   resolve-pr:
@@ -65,7 +68,14 @@ jobs:
     needs: resolve-pr
     if: >
       needs.resolve-pr.outputs.has_pr == 'true' &&
+      github.event.workflow_run.name == 'CI' &&
       (inputs.format_fix_command != '' || inputs.lint_fix_command != '')
+    permissions:
+      contents: write
+      pull-requests: write
+      packages: read
+      id-token: write
+      actions: read
     steps:
       - name: Generate GitHub App token
         id: app-token
@@ -102,7 +112,7 @@ jobs:
       - name: Install Node dependencies
         if: steps.skip-check.outputs.skip != 'true' && inputs.python_version == ''
         env:
-          NODE_AUTH_TOKEN: ${{ steps.app-token.outputs.token }}
+          NODE_AUTH_TOKEN: ${{ secrets.PKG_READ_TOKEN || steps.app-token.outputs.token }}
         run: npm ci
 
       - name: Setup Python
@@ -152,7 +162,8 @@ jobs:
     if: >
       always() &&
       needs.resolve-pr.outputs.has_pr == 'true' &&
-      needs.resolve-pr.result == 'success'
+      needs.resolve-pr.result == 'success' &&
+      github.event.workflow_run.name == 'CI'
     permissions:
       contents: write
       pull-requests: write
@@ -273,3 +284,185 @@ jobs:
         run: |
           gh api repos/${{ github.repository }}/issues/${{ needs.resolve-pr.outputs.pr_number }}/labels \
             -f "labels[]=ci-autofix" || true
+
+  changeset-fix:
+    name: Changeset Fix (auto-add missing changeset)
+    runs-on: ubuntu-latest
+    needs: resolve-pr
+    if: >
+      needs.resolve-pr.outputs.has_pr == 'true' &&
+      github.event.workflow_run.name == 'changeset' &&
+      github.event.workflow_run.conclusion == 'failure'
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.CLAUDE_ARAMI_APP_ID }}
+          private-key: ${{ secrets.CLAUDE_ARAMI_PRIVATE_KEY }}
+          owner: aramiworks
+
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-pr.outputs.head_branch }}
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Skip if no changeset config or branch is changeset-release
+        id: precheck
+        run: |
+          if [ ! -f .changeset/config.json ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "reason=no .changeset/config.json" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "${{ needs.resolve-pr.outputs.head_branch }}" == changeset-release/* ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "reason=changeset-release branch" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Skip if last commit was from bot
+        if: steps.precheck.outputs.skip != 'true'
+        id: skip-check
+        run: |
+          last_author=$(git log -1 --pretty=format:'%ae')
+          if echo "$last_author" | grep -qiE 'aramiworks|claude|github-actions'; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fetch base branch
+        if: steps.precheck.outputs.skip != 'true' && steps.skip-check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          BASE_REF=$(gh api repos/${{ github.repository }}/pulls/${{ needs.resolve-pr.outputs.pr_number }} --jq '.base.ref')
+          echo "BASE_REF=$BASE_REF" >> "$GITHUB_ENV"
+          git fetch origin "$BASE_REF" --depth=1
+
+      - name: Generate changeset
+        if: steps.precheck.outputs.skip != 'true' && steps.skip-check.outputs.skip != 'true'
+        id: gen
+        env:
+          BRANCH: ${{ needs.resolve-pr.outputs.head_branch }}
+        run: |
+          node <<'EOF'
+          const { execSync } = require('node:child_process');
+          const fs = require('node:fs');
+          const path = require('node:path');
+
+          const sh = (cmd) => execSync(cmd, { encoding: 'utf8' }).trim();
+
+          const baseRef = process.env.BASE_REF;
+          const branch = process.env.BRANCH;
+
+          // 1. Get changed files (excluding .github and .changeset)
+          const changed = sh(`git diff origin/${baseRef}...HEAD --name-only --diff-filter=ACMR`)
+            .split('\n')
+            .filter(Boolean)
+            .filter((f) => !f.startsWith('.github/') && !f.startsWith('.changeset/'));
+
+          if (changed.length === 0) {
+            console.log('No non-CI files changed; skipping.');
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, 'created=false\nreason=no-files\n');
+            process.exit(0);
+          }
+
+          // 2. Resolve each file to its nearest workspace package.json (apps/* or packages/*)
+          const wsRoots = new Set();
+          for (const f of changed) {
+            const parts = f.split('/');
+            // Match apps/<name>/... or packages/<name>/... (single level under apps/packages)
+            // For monorepos with apps/subgraphs/<name>, walk to nearest package.json.
+            let dir = path.dirname(f);
+            while (dir && dir !== '.' && dir !== '/') {
+              const pj = path.join(dir, 'package.json');
+              if (fs.existsSync(pj)) {
+                if (/^(apps|packages)\//.test(dir)) {
+                  wsRoots.add(dir);
+                  break;
+                }
+              }
+              dir = path.dirname(dir);
+            }
+          }
+
+          if (wsRoots.size === 0) {
+            console.log('No workspace packages touched; skipping.');
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, 'created=false\nreason=no-workspace\n');
+            process.exit(0);
+          }
+
+          const packages = [...wsRoots].map((d) => {
+            const pkg = JSON.parse(fs.readFileSync(path.join(d, 'package.json'), 'utf8'));
+            return pkg.name;
+          }).filter(Boolean);
+
+          if (packages.length === 0) {
+            console.log('Workspace dirs found but no package names; skipping.');
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, 'created=false\nreason=no-names\n');
+            process.exit(0);
+          }
+
+          // 3. Determine bump type from latest commit subject
+          const subject = sh(`git log -1 --pretty=%s`);
+          const body = sh(`git log -1 --pretty=%B`);
+          let bump = 'patch';
+          if (/^[a-z]+(\(.*\))?!:/.test(subject) || /BREAKING CHANGE/.test(body)) {
+            bump = 'major';
+          } else if (/^feat(\(.*\))?:/.test(subject)) {
+            bump = 'minor';
+          }
+
+          // 4. Build slug from branch name
+          const slug = branch.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '').toLowerCase().slice(0, 50);
+          const file = `.changeset/auto-${slug}.md`;
+
+          // 5. Write changeset
+          const lines = [
+            '---',
+            ...packages.map((p) => `"${p}": ${bump}`),
+            '---',
+            '',
+            subject,
+            '',
+          ];
+          fs.mkdirSync('.changeset', { recursive: true });
+          fs.writeFileSync(file, lines.join('\n'));
+
+          console.log(`Wrote ${file}:`);
+          console.log(lines.join('\n'));
+
+          fs.appendFileSync(
+            process.env.GITHUB_OUTPUT,
+            `created=true\nfile=${file}\npackages=${packages.join(',')}\nbump=${bump}\n`,
+          );
+          EOF
+
+      - name: Commit and push
+        if: steps.precheck.outputs.skip != 'true' && steps.skip-check.outputs.skip != 'true' && steps.gen.outputs.created == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          git config user.name "claude-arami[bot]"
+          git config user.email "claude-arami[bot]@users.noreply.github.com"
+          git add "${{ steps.gen.outputs.file }}"
+          if git diff --cached --quiet; then
+            echo "Nothing to commit"
+            exit 0
+          fi
+          git commit -m "chore: auto-add changeset
+
+          Packages: ${{ steps.gen.outputs.packages }}
+          Bump: ${{ steps.gen.outputs.bump }}
+
+          Co-Authored-By: claude-arami[bot] <claude-arami[bot]@users.noreply.github.com>"
+          git push origin "${{ needs.resolve-pr.outputs.head_branch }}"
