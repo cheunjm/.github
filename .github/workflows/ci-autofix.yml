@@ -147,6 +147,7 @@ jobs:
           git commit -m "style: auto-fix format/lint
 
           Co-Authored-By: claude-arami[bot] <claude-arami[bot]@users.noreply.github.com>"
+          git pull --rebase origin ${{ needs.resolve-pr.outputs.head_branch }} || true
           git push origin ${{ needs.resolve-pr.outputs.head_branch }}
 
   claude-fix:
@@ -460,6 +461,7 @@ jobs:
           Bump: ${{ steps.gen.outputs.bump }}
 
           Co-Authored-By: claude-arami[bot] <claude-arami[bot]@users.noreply.github.com>"
+          git pull --rebase origin "${{ needs.resolve-pr.outputs.head_branch }}" || true
           git push origin "${{ needs.resolve-pr.outputs.head_branch }}"
 
   conflict-fix:
