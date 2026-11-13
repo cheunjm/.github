@@ -35,7 +35,6 @@ Other repos call these via `uses: cheunjm/.github/.github/workflows/{name}.yml@m
 
 | Workflow | Trigger |
 |----------|---------|
-| `claude.yml` | `@claude` mentions in issues/PRs |
 | `claude-db-migration.yml` | Migration file changes |
 | `auto-update-branches.yml` | Push to default branch (rebases open PRs) |
 | `auto-resolve-conflicts.yml` | After auto-update-branches (posts `@claude` on conflicting PRs) |
