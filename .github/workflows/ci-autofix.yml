@@ -136,6 +136,7 @@ jobs:
         id: commit-push
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          HEAD_BRANCH: ${{ needs.resolve-pr.outputs.head_branch }}
         run: |
           git config user.name "arami-openclaw-bot[bot]"
           git config user.email "arami-openclaw-bot[bot]@users.noreply.github.com"
@@ -148,8 +149,8 @@ jobs:
           git commit -m "style: auto-fix format/lint
 
           Co-Authored-By: arami-openclaw-bot[bot] <arami-openclaw-bot[bot]@users.noreply.github.com>"
-          if git pull --rebase origin ${{ needs.resolve-pr.outputs.head_branch }}; then
-            git push origin ${{ needs.resolve-pr.outputs.head_branch }}
+          if git pull --rebase origin "$HEAD_BRANCH"; then
+            git push origin "$HEAD_BRANCH"
             echo "commit_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
             echo "fixed=true" >> "$GITHUB_OUTPUT"
           else
@@ -324,13 +325,15 @@ jobs:
 
       - name: Skip if no changeset config or branch is changeset-release
         id: precheck
+        env:
+          HEAD_BRANCH: ${{ needs.resolve-pr.outputs.head_branch }}
         run: |
           if [ ! -f .changeset/config.json ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "reason=no .changeset/config.json" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if [[ "${{ needs.resolve-pr.outputs.head_branch }}" == changeset-release/* ]]; then
+          if [[ "$HEAD_BRANCH" == changeset-release/* ]]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "reason=changeset-release branch" >> "$GITHUB_OUTPUT"
             exit 0
@@ -461,22 +464,26 @@ jobs:
         id: commit-push
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          HEAD_BRANCH: ${{ needs.resolve-pr.outputs.head_branch }}
+          GEN_FILE: ${{ steps.gen.outputs.file }}
+          GEN_PACKAGES: ${{ steps.gen.outputs.packages }}
+          GEN_BUMP: ${{ steps.gen.outputs.bump }}
         run: |
           git config user.name "arami-openclaw-bot[bot]"
           git config user.email "arami-openclaw-bot[bot]@users.noreply.github.com"
-          git add "${{ steps.gen.outputs.file }}"
+          git add "$GEN_FILE"
           if git diff --cached --quiet; then
             echo "Nothing to commit"
             exit 0
           fi
           git commit -m "chore: auto-add changeset
 
-          Packages: ${{ steps.gen.outputs.packages }}
-          Bump: ${{ steps.gen.outputs.bump }}
+          Packages: $GEN_PACKAGES
+          Bump: $GEN_BUMP
 
           Co-Authored-By: arami-openclaw-bot[bot] <arami-openclaw-bot[bot]@users.noreply.github.com>"
-          if git pull --rebase origin "${{ needs.resolve-pr.outputs.head_branch }}"; then
-            git push origin "${{ needs.resolve-pr.outputs.head_branch }}"
+          if git pull --rebase origin "$HEAD_BRANCH"; then
+            git push origin "$HEAD_BRANCH"
             echo "commit_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           else
             git rebase --abort || true
@@ -487,10 +494,14 @@ jobs:
         if: steps.precheck.outputs.skip != 'true' && steps.skip-check.outputs.skip != 'true' && steps.gen.outputs.created == 'true' && steps.commit-push.outputs.commit_sha != ''
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ needs.resolve-pr.outputs.pr_number }}
+          GEN_PACKAGES: ${{ steps.gen.outputs.packages }}
+          GEN_BUMP: ${{ steps.gen.outputs.bump }}
+          COMMIT_SHA: ${{ steps.commit-push.outputs.commit_sha }}
         run: |
-          gh pr comment ${{ needs.resolve-pr.outputs.pr_number }} \
-            --repo ${{ github.repository }} \
+          gh pr comment "$PR_NUMBER" \
+            --repo "$GITHUB_REPOSITORY" \
             --body "**CI autofix:** missing changeset added automatically.
 
-          Packages: \`${{ steps.gen.outputs.packages }}\` (bump: ${{ steps.gen.outputs.bump }})
-          Commit: ${{ steps.commit-push.outputs.commit_sha }}"
+          Packages: \`$GEN_PACKAGES\` (bump: $GEN_BUMP)
+          Commit: $COMMIT_SHA"
