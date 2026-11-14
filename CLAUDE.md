@@ -37,6 +37,5 @@ Other repos call these via `uses: cheunjm/.github/.github/workflows/{name}.yml@m
 |----------|---------|
 | `claude-db-migration.yml` | Migration file changes |
 | `auto-update-branches.yml` | Push to default branch (rebases open PRs) |
-| `auto-resolve-conflicts.yml` | After auto-update-branches (posts `@claude` on conflicting PRs) |
 | `claude-review.yml` | Pull request opened/synchronized (auto-review + PR body summary) |
 | `notify-merge.yml` | Push to default branch (parameterized: `slack_channel`, `repo_label`) |
