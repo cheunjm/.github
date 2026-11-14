@@ -21,19 +21,38 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Get commit info
-        id: info
-        run: |
-          echo "message=$(git log -1 --pretty=format:'%s')" >> $GITHUB_OUTPUT
-          echo "author=$(git log -1 --pretty=format:'%an')" >> $GITHUB_OUTPUT
-          echo "sha=$(git log -1 --pretty=format:'%h')" >> $GITHUB_OUTPUT
-
       - name: Post to Slack
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL: ${{ inputs.slack_channel }}
+          REPO_LABEL: ${{ inputs.repo_label }}
+          REPOSITORY: ${{ github.repository }}
+          FULL_SHA: ${{ github.sha }}
         run: |
-          curl -s -X POST https://slack.com/api/chat.postMessage \
-            -H "Authorization: Bearer ${{ secrets.SLACK_BOT_TOKEN }}" \
-            -H "Content-Type: application/json" \
-            -d "{
-              \"channel\": \"${{ inputs.slack_channel }}\",
-              \"text\": \"✅ *${{ inputs.repo_label }} merge 완료*\n• \`${{ steps.info.outputs.sha }}\` — ${{ steps.info.outputs.message }}\n• 작성자: ${{ steps.info.outputs.author }}\n• <https://github.com/${{ github.repository }}/commit/${{ github.sha }}|커밋 보기>\"
-            }"
+          set -euo pipefail
+
+          # Commit subject and author are attacker-controlled. They are only ever
+          # read here as data, never interpolated into the script by Actions.
+          # Escape Slack control characters so they cannot trigger mentions/links.
+          esc() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
+
+          message=$(git log -1 --pretty=format:'%s' | esc)
+          author=$(git log -1 --pretty=format:'%an' | esc)
+          short_sha=$(git log -1 --pretty=format:'%h')
+          label=$(printf '%s' "$REPO_LABEL" | esc)
+
+          text=$(printf '✅ *%s merge 완료*\n• `%s` — %s\n• 작성자: %s\n• <https://github.com/%s/commit/%s|커밋 보기>' \
+            "$label" "$short_sha" "$message" "$author" "$REPOSITORY" "$FULL_SHA")
+
+          payload=$(jq -n --arg channel "$SLACK_CHANNEL" --arg text "$text" \
+            '{channel: $channel, text: $text}')
+
+          response=$(curl -sS -X POST https://slack.com/api/chat.postMessage \
+            -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+            -H "Content-Type: application/json; charset=utf-8" \
+            --data "$payload")
+
+          if ! printf '%s' "$response" | jq -e '.ok == true' > /dev/null; then
+            echo "::error::Slack API rejected the message: $(printf '%s' "$response" | jq -r '.error // "unknown"')"
+            exit 1
+          fi
