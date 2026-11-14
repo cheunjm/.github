@@ -25,7 +25,7 @@ on:
         default: ""
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
-        required: true
+        required: false
       OPENCLAW_BOT_APP_ID:
         required: true
       OPENCLAW_BOT_PRIVATE_KEY:
@@ -170,8 +170,8 @@ jobs:
 
           Commit: ${{ steps.commit-push.outputs.commit_sha }}"
 
-  claude-fix:
-    name: Claude Fix (test/typecheck/build/codecov)
+  agent-fix:
+    name: Agent Fix (test/typecheck/build/codecov)
     runs-on: ubuntu-latest
     needs: [resolve-pr, script-fix]
     if: >
@@ -184,7 +184,13 @@ jobs:
         id: label-check
         env:
           GH_TOKEN: ${{ github.token }}
+          AGENT_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         run: |
+          if [ -z "$AGENT_TOKEN" ]; then
+            echo "No agent token configured; agent-fix is opt-in, skipping"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           LABELS=$(gh api repos/${{ github.repository }}/issues/${{ needs.resolve-pr.outputs.pr_number }}/labels --jq '.[].name')
           if echo "$LABELS" | grep -q "ci-autofix"; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -204,19 +210,19 @@ jobs:
           CODECOV_STATE=$(gh api repos/${{ github.repository }}/commits/${{ needs.resolve-pr.outputs.head_sha }}/status \
             --jq '[.statuses[] | select(.context == "codecov/patch")] | .[0].state // "none"')
 
-          CLAUDE_FAILURES=""
-          if echo "$FAILED_JOBS" | grep -qi "test"; then CLAUDE_FAILURES="${CLAUDE_FAILURES}test,"; fi
-          if echo "$FAILED_JOBS" | grep -qi "typecheck"; then CLAUDE_FAILURES="${CLAUDE_FAILURES}typecheck,"; fi
-          if echo "$FAILED_JOBS" | grep -qi "build"; then CLAUDE_FAILURES="${CLAUDE_FAILURES}build,"; fi
-          if [ "$CODECOV_STATE" = "failure" ]; then CLAUDE_FAILURES="${CLAUDE_FAILURES}codecov,"; fi
+          AGENT_FAILURES=""
+          if echo "$FAILED_JOBS" | grep -qi "test"; then AGENT_FAILURES="${AGENT_FAILURES}test,"; fi
+          if echo "$FAILED_JOBS" | grep -qi "typecheck"; then AGENT_FAILURES="${AGENT_FAILURES}typecheck,"; fi
+          if echo "$FAILED_JOBS" | grep -qi "build"; then AGENT_FAILURES="${AGENT_FAILURES}build,"; fi
+          if [ "$CODECOV_STATE" = "failure" ]; then AGENT_FAILURES="${AGENT_FAILURES}codecov,"; fi
 
-          CLAUDE_FAILURES=$(echo "$CLAUDE_FAILURES" | sed 's/,$//')
+          AGENT_FAILURES=$(echo "$AGENT_FAILURES" | sed 's/,$//')
           echo "failed_jobs=$FAILED_JOBS" >> "$GITHUB_OUTPUT"
-          echo "claude_failures=$CLAUDE_FAILURES" >> "$GITHUB_OUTPUT"
-          echo "has_claude_failures=$( [ -n "$CLAUDE_FAILURES" ] && echo true || echo false )" >> "$GITHUB_OUTPUT"
+          echo "agent_failures=$AGENT_FAILURES" >> "$GITHUB_OUTPUT"
+          echo "has_agent_failures=$( [ -n "$AGENT_FAILURES" ] && echo true || echo false )" >> "$GITHUB_OUTPUT"
 
       - name: Skip if last commit was an auto-fix
-        if: steps.label-check.outputs.skip != 'true' && steps.failures.outputs.has_claude_failures == 'true'
+        if: steps.label-check.outputs.skip != 'true' && steps.failures.outputs.has_agent_failures == 'true'
         id: skip-check
         env:
           GH_TOKEN: ${{ github.token }}
@@ -232,7 +238,7 @@ jobs:
       - name: Checkout repository
         if: >
           steps.label-check.outputs.skip != 'true' &&
-          steps.failures.outputs.has_claude_failures == 'true' &&
+          steps.failures.outputs.has_agent_failures == 'true' &&
           steps.skip-check.outputs.skip != 'true'
         uses: actions/checkout@v4
         with:
@@ -242,7 +248,7 @@ jobs:
       - name: Generate GitHub App token
         if: >
           steps.label-check.outputs.skip != 'true' &&
-          steps.failures.outputs.has_claude_failures == 'true' &&
+          steps.failures.outputs.has_agent_failures == 'true' &&
           steps.skip-check.outputs.skip != 'true'
         id: app-token
         uses: actions/create-github-app-token@v1
@@ -250,10 +256,10 @@ jobs:
           app-id: ${{ secrets.OPENCLAW_BOT_APP_ID }}
           private-key: ${{ secrets.OPENCLAW_BOT_PRIVATE_KEY }}
 
-      - name: Run Claude Code
+      - name: Run agent
         if: >
           steps.label-check.outputs.skip != 'true' &&
-          steps.failures.outputs.has_claude_failures == 'true' &&
+          steps.failures.outputs.has_agent_failures == 'true' &&
           steps.skip-check.outputs.skip != 'true'
         uses: anthropics/claude-code-action@v1
         with:
@@ -263,7 +269,7 @@ jobs:
           claude_args: '--allowedTools "mcp__github,Edit,Read,Glob,Grep,Bash(npm test:*),Bash(npx:*),Bash(gh api:*),Bash(gh run view:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*)"'
           prompt: |
             The following CI checks failed on PR #${{ needs.resolve-pr.outputs.pr_number }} in ${{ github.repository }}:
-            **Failed checks:** ${{ steps.failures.outputs.claude_failures }}
+            **Failed checks:** ${{ steps.failures.outputs.agent_failures }}
             **CI run:** https://github.com/${{ github.repository }}/actions/runs/${{ github.event.workflow_run.id }}
 
             Your job:
@@ -292,7 +298,7 @@ jobs:
       - name: Add ci-autofix label
         if: >
           steps.label-check.outputs.skip != 'true' &&
-          steps.failures.outputs.has_claude_failures == 'true' &&
+          steps.failures.outputs.has_agent_failures == 'true' &&
           steps.skip-check.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}

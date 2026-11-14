@@ -1,0 +1,116 @@
+name: Agent Review
+
+on:
+  workflow_call:
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+      OPENCLAW_BOT_APP_ID:
+        required: true
+      OPENCLAW_BOT_PRIVATE_KEY:
+        required: true
+
+jobs:
+  review:
+    name: Review
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.OPENCLAW_BOT_APP_ID }}
+          private-key: ${{ secrets.OPENCLAW_BOT_PRIVATE_KEY }}
+
+      - name: Checkout PR
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Check for doc-only diff
+        id: doc-check
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          NON_DOC=$(gh pr diff ${{ github.event.pull_request.number }} \
+            --repo ${{ github.repository }} \
+            --name-only \
+            | grep -vE '\.(md|mdx)$|^\.changeset/|^docs/' || true)
+          if [ -z "$NON_DOC" ]; then
+            echo "doc_only=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "doc_only=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip if last commit was by a bot
+        if: steps.doc-check.outputs.doc_only != 'true'
+        id: bot-check
+        run: |
+          last_author=$(git log -1 --pretty=format:'%an')
+          if [[ "$last_author" == *"[bot]"* ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run Claude review
+        if: steps.doc-check.outputs.doc_only != 'true' && steps.bot-check.outputs.skip != 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ steps.app-token.outputs.token }}
+          allowed_bots: 'arami-openclaw-bot'
+          track_progress: true
+          claude_args: '--model claude-sonnet-4-6 --allowedTools "mcp__github_inline_comment__create_inline_comment,Read,Glob,Grep,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr edit:*),Bash(gh pr comment:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*)"'
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            You have two tasks. Do task A first, then task B.
+
+            ## Task A — Update PR body summary
+
+            1. Read the current PR body: `gh pr view ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --json body --jq .body`
+            2. Read the diff: `gh pr diff ${{ github.event.pull_request.number }} --repo ${{ github.repository }}`
+            3. Write a 2–4 sentence technical summary of what changed and why.
+            4. Update ONLY the section between these sentinel markers:
+               `<!-- claude-review-summary:start -->` and `<!-- claude-review-summary:end -->`
+            5. Preserve everything outside the markers exactly — especially `Closes INF-XXX` references and any human-authored notes.
+            6. If the markers don't exist, append a new block at the end of the body:
+               ```
+               <!-- claude-review-summary:start -->
+               {your summary}
+               <!-- claude-review-summary:end -->
+               ```
+            7. Use `gh pr edit ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --body "<full new body>"` to apply.
+
+            ## Task B — Inline code review
+
+            Review the diff for **real defects only**. Use severity badges:
+
+            - `**P1**` — bug, security issue, data corruption, correctness failure on user input, null deref, missing auth, race condition
+            - `**P2**` — maintainability/perf issue worth fixing (e.g., O(n²) where O(n) is trivial, duplicated logic across 3+ sites, missing IO error handling)
+
+            **NOT a comment** (do not post these): naming preferences, "consider extracting", missing JSDoc, formatting, "you could also...", praise, style nits.
+
+            **If unsure between P2 and noise, OMIT IT.**
+
+            ### Hard rules
+            - **Cap: ≤5 inline comments per review.** Prioritize P1. If you find more than 5 issues, post the top 5 and summarize the rest in a single top-level `gh pr comment`.
+            - **Silence on clean:** if you find zero P1/P2 issues, post NOTHING — no "looks good" summary.
+            - **No preamble, no emoji.** Each comment starts directly with `**P1**` or `**P2**` then the issue.
+            - **Skip lines last touched by `arami-openclaw-bot[bot]`** — those came from automation; don't enter a feedback loop.
+
+            ### How to post inline comments
+            Use `mcp__github_inline_comment__create_inline_comment` with `confirmed: true` for each issue. Body format:
+            ```
+            **P1** {one-line issue summary}
+
+            {1-2 sentences explaining the defect and impact}
+            ```
+
+            Begin with Task A. Then Task B.
