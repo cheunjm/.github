@@ -35,7 +35,7 @@ Other repos call these via `uses: cheunjm/.github/.github/workflows/{name}.yml@m
 
 | Workflow | Trigger |
 |----------|---------|
-| `claude-db-migration.yml` | Migration file changes |
+| `db-migration-check.yml` | PR with migration file changes (deterministic SQL risk scan, no LLM) |
 | `auto-update-branches.yml` | Push to default branch (rebases open PRs) |
 | `auto-resolve-conflicts.yml` | After auto-update-branches (posts `@claude` on conflicting PRs) |
 | `claude-review.yml` | Pull request opened/synchronized (auto-review + PR body summary) |
