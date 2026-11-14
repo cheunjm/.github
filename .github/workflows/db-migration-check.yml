@@ -1,0 +1,154 @@
+name: DB Migration Check
+
+# Deterministic (no LLM) scan of SQL migrations added or changed in a PR.
+# Flags patterns that commonly cause data loss, locks, or breaking deploys,
+# then posts/updates one sticky PR comment. Postgres-flavoured, line-based:
+# multi-line statements can be missed. Reversibility and table size are
+# judgement calls left to the reviewer.
+
+on:
+  workflow_call:
+    inputs:
+      migration_paths:
+        description: "Newline-separated git pathspec globs for migration files"
+        required: false
+        type: string
+        default: "**/migrations/**/*.sql"
+      fail_on_critical:
+        description: "Fail the job when a CRITICAL pattern is found"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  check:
+    name: DB migration check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan migrations
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          MIGRATION_PATHS: ${{ inputs.migration_paths }}
+          FAIL_ON_CRITICAL: ${{ inputs.fail_on_critical }}
+        run: |
+          set -euo pipefail
+
+          MARKER='<!-- db-migration-check -->'
+          REPORT="$(mktemp)"
+
+          paths=()
+          while IFS= read -r p; do
+            if [ -n "$p" ]; then paths+=(":(glob)$p"); fi
+          done <<< "$MIGRATION_PATHS"
+
+          if [ "${#paths[@]}" -eq 0 ]; then
+            echo "::error::migration_paths is empty"
+            exit 1
+          fi
+
+          files=()
+          while IFS= read -r changed; do
+            files+=("$changed")
+          done < <(git diff --name-only --diff-filter=AM "$BASE_SHA" HEAD -- "${paths[@]}")
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No migration files changed."
+            exit 0
+          fi
+
+          # SEVERITY#MATCH REGEX#EXCLUDE REGEX (optional)#MESSAGE
+          # '#' is the field delimiter because regexes use '|' for alternation.
+          rules=(
+            'CRITICAL#\bDROP[[:space:]]+(TABLE|SCHEMA|DATABASE)\b##Drops a table/schema/database: permanent data loss'
+            'CRITICAL#\bTRUNCATE\b##Truncates table data'
+            'HIGH#\bDROP[[:space:]]+COLUMN\b##Drops a column: ship app code that stops using it first'
+            'HIGH#\bRENAME[[:space:]]+(TO|COLUMN)\b##Rename breaks app versions still running during deploy'
+            'HIGH#\bALTER[[:space:]]+COLUMN\b.*[[:space:]]TYPE\b##Type change can rewrite and lock the table'
+            'HIGH#\bDELETE[[:space:]]+FROM\b##Deletes data: confirm it is intended and has a WHERE clause'
+            'MEDIUM#\bCREATE[[:space:]]+(UNIQUE[[:space:]]+)?INDEX\b#CONCURRENTLY#Index build without CONCURRENTLY locks writes'
+            'MEDIUM#\bSET[[:space:]]+NOT[[:space:]]+NULL\b##Scans the table under lock'
+            'MEDIUM#\bADD[[:space:]]+COLUMN\b.*\bNOT[[:space:]]+NULL\b#DEFAULT#NOT NULL column without DEFAULT fails on non-empty tables'
+            'MEDIUM#\bADD[[:space:]]+CONSTRAINT\b.*\b(FOREIGN[[:space:]]+KEY|CHECK)\b#NOT[[:space:]]+VALID#Constraint validated under lock; consider NOT VALID then VALIDATE'
+          )
+
+          added_lines() {
+            git diff -U0 "$BASE_SHA" HEAD -- "$1" | awk '
+              /^@@/ { match($0, /\+[0-9]+/); ln = substr($0, RSTART + 1, RLENGTH - 1) + 0; next }
+              /^\+\+\+/ { next }
+              /^\+/ { print ln "\t" substr($0, 2); ln++ }
+            '
+          }
+
+          findings="$(mktemp)"
+          for f in "${files[@]}"; do
+            while IFS=$'\t' read -r ln text; do
+              [[ "$text" =~ ^[[:space:]]*-- ]] && continue
+              for rule in "${rules[@]}"; do
+                IFS='#' read -r sev re excl msg <<< "$rule"
+                if printf '%s' "$text" | grep -qiE "$re"; then
+                  if [ -n "$excl" ] && printf '%s' "$text" | grep -qiE "$excl"; then
+                    continue
+                  fi
+                  snippet="$(printf '%s' "$text" | tr '`' "'" | sed -E 's/^[[:space:]]+//' | cut -c1-120)"
+                  printf '%s\t%s:%s\t%s\t%s\n' "$sev" "$f" "$ln" "$msg" "$snippet" >> "$findings"
+                fi
+              done
+            done < <(added_lines "$f")
+          done
+
+          critical=$(grep -c '^CRITICAL' "$findings" || true)
+          {
+            echo "$MARKER"
+            echo "## DB migration check"
+            echo
+            echo "Scanned ${#files[@]} migration file(s)."
+            echo
+            if [ -s "$findings" ]; then
+              for sev in CRITICAL HIGH MEDIUM; do
+                grep "^$sev" "$findings" | while IFS=$'\t' read -r _ loc msg snippet; do
+                  echo "- **$sev** \`$loc\`: $msg"
+                  echo "  \`$snippet\`"
+                done || true
+              done
+            else
+              echo "No risky patterns found."
+            fi
+            echo
+            echo "_Automated line-based scan; it cannot judge reversibility or table size. Review those manually._"
+          } > "$REPORT"
+
+          cat "$REPORT" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -n "${PR_NUMBER:-}" ]; then
+            # Only reuse a comment authored by this workflow's own identity, so a
+            # user-planted marker comment cannot hijack or block the report.
+            existing=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate \
+              --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | contains(\"$MARKER\"))) | .id" \
+              | head -n 1 || true)
+            posted=false
+            if [ -n "$existing" ]; then
+              if gh api -X PATCH "repos/$REPO/issues/comments/$existing" -F body=@"$REPORT" > /dev/null; then
+                posted=true
+              fi
+            fi
+            if [ "$posted" != "true" ]; then
+              gh api -X POST "repos/$REPO/issues/$PR_NUMBER/comments" -F body=@"$REPORT" > /dev/null \
+                || echo "::warning::Could not post PR comment (read-only token on fork PR?). See job summary."
+            fi
+          fi
+
+          if [ "$FAIL_ON_CRITICAL" = "true" ] && [ "$critical" -gt 0 ]; then
+            echo "::error::$critical CRITICAL migration pattern(s) found"
+            exit 1
+          fi
