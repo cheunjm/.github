@@ -37,5 +37,8 @@ Other repos call these via `uses: cheunjm/.github/.github/workflows/{name}.yml@m
 |----------|---------|
 | `db-migration-check.yml` | PR with migration file changes (deterministic SQL risk scan, no LLM) |
 | `auto-update-branches.yml` | Push to default branch (rebases open PRs) |
+| `ci-autofix.yml` | `workflow_run` of `CI` / `changeset` (auto-fixes format/lint, adds missing changesets, Claude fixes test/typecheck/build failures) |
 | `claude-review.yml` | Pull request opened/synchronized (auto-review + PR body summary) |
 | `notify-merge.yml` | Push to default branch (parameterized: `slack_channel`, `repo_label`) |
+
+Local to this repo, not callable (no `workflow_call`): `ci.yml` (actionlint on workflow changes), `auto-label.yml`.
