@@ -131,14 +131,20 @@ jobs:
           cat "$REPORT" >> "$GITHUB_STEP_SUMMARY"
 
           if [ -n "${PR_NUMBER:-}" ]; then
+            # Only reuse a comment authored by this workflow's own identity, so a
+            # user-planted marker comment cannot hijack or block the report.
             existing=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate \
-              --jq ".[] | select(.body | contains(\"$MARKER\")) | .id" | head -n 1 || true)
+              --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | contains(\"$MARKER\"))) | .id" \
+              | head -n 1 || true)
+            posted=false
             if [ -n "$existing" ]; then
-              gh api -X PATCH "repos/$REPO/issues/comments/$existing" -F body=@"$REPORT" > /dev/null \
-                || echo "Could not update comment (read-only token on fork PR?)"
-            else
+              if gh api -X PATCH "repos/$REPO/issues/comments/$existing" -F body=@"$REPORT" > /dev/null; then
+                posted=true
+              fi
+            fi
+            if [ "$posted" != "true" ]; then
               gh api -X POST "repos/$REPO/issues/$PR_NUMBER/comments" -F body=@"$REPORT" > /dev/null \
-                || echo "Could not post comment (read-only token on fork PR?)"
+                || echo "::warning::Could not post PR comment (read-only token on fork PR?). See job summary."
             fi
           fi
 
