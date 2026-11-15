@@ -131,6 +131,23 @@ jobs:
         run: ${{ inputs.lint_fix_command }}
         continue-on-error: true
 
+      - name: Restrict fixes to files changed in this PR
+        if: steps.skip-check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ needs.resolve-pr.outputs.pr_number }}
+        run: |
+          # The fix commands run repo-wide. Revert anything they changed outside
+          # the PR so a repo with existing format drift does not get an unrelated
+          # sweeping commit on every PR.
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files" --paginate --jq '.[].filename' > "$RUNNER_TEMP/pr-files.txt"
+          while IFS= read -r -d '' f; do
+            if ! grep -qxF -- "$f" "$RUNNER_TEMP/pr-files.txt"; then
+              git checkout -- "$f"
+              echo "reverted fix outside this PR: $f"
+            fi
+          done < <(git diff --name-only -z)
+
       - name: Commit and push if changed
         if: steps.skip-check.outputs.skip != 'true'
         id: commit-push
@@ -140,7 +157,7 @@ jobs:
         run: |
           git config user.name "arami-bot[bot]"
           git config user.email "5046379+arami-bot[bot]@users.noreply.github.com"
-          git add -A
+          git add -u
           if git diff --cached --quiet; then
             echo "No formatting/lint changes needed"
             echo "fixed=false" >> "$GITHUB_OUTPUT"
