@@ -138,8 +138,8 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           HEAD_BRANCH: ${{ needs.resolve-pr.outputs.head_branch }}
         run: |
-          git config user.name "arami-openclaw-bot[bot]"
-          git config user.email "arami-openclaw-bot[bot]@users.noreply.github.com"
+          git config user.name "arami-bot[bot]"
+          git config user.email "5046379+arami-bot[bot]@users.noreply.github.com"
           git add -A
           if git diff --cached --quiet; then
             echo "No formatting/lint changes needed"
@@ -148,7 +148,7 @@ jobs:
           fi
           git commit -m "style: auto-fix format/lint
 
-          Co-Authored-By: arami-openclaw-bot[bot] <arami-openclaw-bot[bot]@users.noreply.github.com>"
+          Co-Authored-By: arami-bot[bot] <5046379+arami-bot[bot]@users.noreply.github.com>"
           if git pull --rebase origin "$HEAD_BRANCH"; then
             git push origin "$HEAD_BRANCH"
             echo "commit_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
@@ -265,7 +265,7 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ steps.app-token.outputs.token }}
-          allowed_bots: 'cheunjm-openclaw-bot'
+          allowed_bots: 'arami-bot'
           claude_args: '--allowedTools "mcp__github,Edit,Read,Glob,Grep,Bash(npm test:*),Bash(npx:*),Bash(gh api:*),Bash(gh run view:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*)"'
           prompt: |
             The following CI checks failed on PR #${{ needs.resolve-pr.outputs.pr_number }} in ${{ github.repository }}:
@@ -475,8 +475,8 @@ jobs:
           GEN_PACKAGES: ${{ steps.gen.outputs.packages }}
           GEN_BUMP: ${{ steps.gen.outputs.bump }}
         run: |
-          git config user.name "arami-openclaw-bot[bot]"
-          git config user.email "arami-openclaw-bot[bot]@users.noreply.github.com"
+          git config user.name "arami-bot[bot]"
+          git config user.email "5046379+arami-bot[bot]@users.noreply.github.com"
           git add "$GEN_FILE"
           if git diff --cached --quiet; then
             echo "Nothing to commit"
@@ -487,7 +487,7 @@ jobs:
           Packages: $GEN_PACKAGES
           Bump: $GEN_BUMP
 
-          Co-Authored-By: arami-openclaw-bot[bot] <arami-openclaw-bot[bot]@users.noreply.github.com>"
+          Co-Authored-By: arami-bot[bot] <5046379+arami-bot[bot]@users.noreply.github.com>"
           if git pull --rebase origin "$HEAD_BRANCH"; then
             git push origin "$HEAD_BRANCH"
             echo "commit_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
