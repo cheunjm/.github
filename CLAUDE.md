@@ -41,4 +41,6 @@ Other repos call these via `uses: cheunjm/.github/.github/workflows/{name}.yml@m
 | `agent-review.yml` | Pull request opened/synchronized (optional agent add-on: auto-review + PR body summary; nothing may depend on it) |
 | `notify-merge.yml` | Push to default branch (parameterized: `slack_channel`, `repo_label`) |
 
+Every callable workflow takes an optional `runner` input (default `ubuntu-latest`) that sets `runs-on`. Pass a self-hosted label (e.g. `runner: mac-studio`) to run on the Mac Studio. Self-hosted jobs run on macOS, so only use it on private repos and with steps that don't assume Linux.
+
 Local to this repo, not callable (no `workflow_call`): `ci.yml` (actionlint on workflow changes), `auto-label.yml`.
