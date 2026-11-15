@@ -2,6 +2,12 @@ name: Auto-update PR branches
 
 on:
   workflow_call:
+    inputs:
+      runner:
+        description: "Runner label (e.g., mac-studio for the self-hosted runner)"
+        required: false
+        type: string
+        default: "ubuntu-latest"
     secrets:
       BOT_APP_ID:
         required: true
@@ -14,7 +20,7 @@ permissions:
 
 jobs:
   update:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     steps:
       - name: Generate GitHub App token
         id: app-token
