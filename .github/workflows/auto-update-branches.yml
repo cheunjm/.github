@@ -27,12 +27,26 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          prs=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --json number -q '.[].number')
+          # Merge, never rebase: a rebase rewrites every commit SHA and
+          # force-pushes the PR branch, which diverges local checkouts, drops
+          # signatures and desyncs stacked PRs.
+          # Only non-draft PRs from this repo that target the default branch;
+          # stack layers (base is another branch) and fork PRs are left alone.
+          default_branch=$(gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch)
+          prs=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --base "$default_branch" \
+            --json number,isDraft,isCrossRepository \
+            --jq '.[] | select((.isDraft | not) and (.isCrossRepository | not)) | .number')
+          failed=0
           for pr in $prs; do
             echo "Updating PR #$pr..."
-            gh api \
-              --method PUT \
-              "repos/$GITHUB_REPOSITORY/pulls/$pr/update-branch" \
-              -f update_method="rebase" \
-              2>&1 || echo "  Skipped (already up to date or conflict)"
+            if out=$(gh api --method PUT "repos/$GITHUB_REPOSITORY/pulls/$pr/update-branch" \
+              -f update_method="merge" 2>&1); then
+              echo "  updated"
+            elif echo "$out" | grep -q 'HTTP 422'; then
+              echo "  no update needed or merge conflict (HTTP 422)"
+            else
+              echo "::warning::PR #$pr update failed: $out"
+              failed=1
+            fi
           done
+          exit "$failed"
