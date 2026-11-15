@@ -37,7 +37,7 @@ Other repos call these via `uses: cheunjm/.github/.github/workflows/{name}.yml@m
 |----------|---------|
 | `db-migration-check.yml` | PR with migration file changes (deterministic SQL risk scan, no LLM) |
 | `auto-update-branches.yml` | Push to default branch (rebases open PRs) |
-| `ci-autofix.yml` | `workflow_run` of `CI` / `changeset` (auto-fixes format/lint, adds missing changesets; optional `agent-fix` job attempts test/typecheck/build failures) |
+| `ci-autofix.yml` | `workflow_run` of `CI` / `changeset` (auto-fixes format/lint on files the PR changed only, adds missing changesets; optional `agent-fix` job attempts test/typecheck/build failures) |
 | `agent-review.yml` | Pull request opened/synchronized (optional agent add-on: auto-review + PR body summary; nothing may depend on it) |
 | `notify-merge.yml` | Push to default branch (parameterized: `slack_channel`, `repo_label`) |
 
