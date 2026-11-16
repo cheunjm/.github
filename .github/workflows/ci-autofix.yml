@@ -217,7 +217,10 @@ jobs:
 
   agent-fix:
     name: Agent Fix (test/typecheck/build/codecov)
-    runs-on: ${{ inputs.runner }}
+    # Always a GitHub-hosted runner, whatever the runner input says. This job gives an agent
+    # Bash, Edit and git push on code from the PR; the ephemeral hosted VM is its sandbox. A
+    # self-hosted runner (the Mac Studio) has no isolation, so the agent would run as your user.
+    runs-on: ubuntu-latest
     needs: [resolve-pr, script-fix]
     if: >
       always() &&
