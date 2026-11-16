@@ -16,7 +16,10 @@ jobs:
       - name: Add decision-log label
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
         run: |
-          gh pr edit ${{ github.event.pull_request.number }} \
-            --repo ${{ github.repository }} \
-            --add-label "decision-log"
+          # The REST labels endpoint avoids `gh pr edit`, which fails with a
+          # Projects (classic) GraphQL deprecation error.
+          gh api -X POST "repos/${REPO}/issues/${PR_NUMBER}/labels" \
+            -f "labels[]=decision-log"
