@@ -28,6 +28,11 @@ on:
         type: string
         required: false
         default: "ubuntu-latest"
+      agent_runner:
+        description: "Runner label for the tool-less openclaw model call (engine=openclaw). Defaults to the runner input. Set it to mac-studio to keep every other job on GitHub-hosted runners."
+        type: string
+        required: false
+        default: ""
       engine:
         description: "Agent engine for agent-fix: claude (tool-using Claude on a hosted runner), openclaw (tool-less model call on the runner input, patch applied and verified on a hosted runner) or none (no agent-fix; use for public repos, which must not use a self-hosted runner)"
         type: string
@@ -509,9 +514,9 @@ jobs:
 
   agent-fix-patch:
     name: Agent Fix (openclaw) - model call
-    # Runs on the runner input (the Mac Studio). It only reads the prompt artifact and makes
+    # Runs on agent_runner (falls back to the runner input), normally the Mac Studio. It only reads the prompt artifact and makes
     # one tool-less model call; it has no checkout and no secrets.
-    runs-on: ${{ inputs.runner }}
+    runs-on: ${{ inputs.agent_runner || inputs.runner }}
     needs: agent-fix-gather
     if: always() && needs.agent-fix-gather.outputs.run == 'true'
     timeout-minutes: 15
