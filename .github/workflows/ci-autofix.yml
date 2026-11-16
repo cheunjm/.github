@@ -430,11 +430,11 @@ jobs:
           echo "failures=$failures" >> "$GITHUB_OUTPUT"
           echo "run=true" >> "$GITHUB_OUTPUT"
 
-      - name: Checkout PR branch (read-only)
+      - name: Checkout PR head (read-only)
         if: steps.decide.outputs.run == 'true'
         uses: actions/checkout@v4
         with:
-          ref: ${{ needs.resolve-pr.outputs.head_branch }}
+          ref: ${{ needs.resolve-pr.outputs.head_sha }}
           fetch-depth: 1
           persist-credentials: false
 
@@ -458,9 +458,12 @@ jobs:
           files = [l.strip() for l in open(os.path.join(d, "files.txt")) if l.strip()]
           logs = open(os.path.join(d, "logs.txt"), errors="replace").read()
 
+          ws = os.path.realpath(os.getcwd())
           bundle, total = [], 0
           for p in files:
               if os.path.islink(p) or not os.path.isfile(p):
+                  continue
+              if not os.path.realpath(p).startswith(ws + os.sep):
                   continue
               raw = open(p, "rb").read()
               if b"\0" in raw:
@@ -561,30 +564,23 @@ jobs:
           path: ${{ runner.temp }}/agentfix-in/patch.json
           retention-days: 1
 
-  agent-fix-apply:
-    name: Agent Fix (openclaw) - apply and verify
+  # Verify runs PR code, so this job holds no App token. Its only output is pass/fail.
+  agent-fix-verify:
+    name: Agent Fix (openclaw) - verify
     runs-on: ubuntu-latest
-    needs: [resolve-pr, agent-fix-gather, agent-fix-patch]
-    if: always() && needs.agent-fix-patch.outputs.have_patch == 'true'
+    needs: [resolve-pr, agent-fix-patch]
+    if: always() && needs.agent-fix-patch.outputs.have_patch == 'true' && inputs.verify_command != ''
+    outputs:
+      verified: ${{ steps.result.outputs.verified }}
     env:
       REPO: ${{ github.repository }}
       PR_NUMBER: ${{ needs.resolve-pr.outputs.pr_number }}
-      HEAD_SHA: ${{ needs.resolve-pr.outputs.head_sha }}
-      HEAD_BRANCH: ${{ needs.resolve-pr.outputs.head_branch }}
     steps:
-      - name: Generate GitHub App token
-        id: app-token
-        uses: actions/create-github-app-token@v1
-        with:
-          app-id: ${{ secrets.BOT_APP_ID }}
-          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
-
-      # No persisted credentials: verify_command runs PR code and must not be able to read the token.
-      - name: Checkout PR branch
+      - name: Checkout PR head (no credentials)
         uses: actions/checkout@v4
         with:
-          ref: ${{ needs.resolve-pr.outputs.head_branch }}
-          fetch-depth: 0
+          ref: ${{ needs.resolve-pr.outputs.head_sha }}
+          fetch-depth: 1
           persist-credentials: false
 
       - name: Download patch
@@ -596,16 +592,10 @@ jobs:
       - name: Apply patch (validated paths only)
         id: apply
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           D="$RUNNER_TEMP/agentfix-patch"
-          current=$(git rev-parse HEAD)
-          if [ "$current" != "$HEAD_SHA" ]; then
-            echo "::notice::PR moved on ($current != $HEAD_SHA); dropping the stale patch"
-            echo "state=stale" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
           gh api "repos/$REPO/pulls/$PR_NUMBER/files" --paginate --jq '.[].filename' > "$D/changed.txt"
           python3 - "$D" <<'PY'
           import json, os, re, sys
@@ -646,23 +636,119 @@ jobs:
           open(os.path.join(d, "rejected.txt"), "w").write("\n".join(rejected) + ("\n" if rejected else ""))
           PY
           if [ -s "$D/written.txt" ]; then
-            echo "state=applied" >> "$GITHUB_OUTPUT"
+            echo "applied=true" >> "$GITHUB_OUTPUT"
           else
-            echo "state=empty" >> "$GITHUB_OUTPUT"
+            echo "applied=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # The step env carries no token. Nothing from the App token reaches PR code.
       - name: Verify
         id: verify
-        if: steps.apply.outputs.state == 'applied'
+        if: steps.apply.outputs.applied == 'true'
         continue-on-error: true
         env:
           VERIFY_COMMAND: ${{ inputs.verify_command }}
         run: bash -euo pipefail -c "$VERIFY_COMMAND"
 
+      - name: Record result
+        id: result
+        if: always()
+        env:
+          VERIFY_OUTCOME: ${{ steps.verify.outcome }}
+        run: |
+          if [ "$VERIFY_OUTCOME" = "success" ]; then
+            echo "verified=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "verified=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Mints the App token only here, on a fresh checkout that never ran PR code. The patch is
+  # re-validated and re-applied from the artifact; nothing is carried over from the verify job.
+  agent-fix-push:
+    name: Agent Fix (openclaw) - push and report
+    runs-on: ubuntu-latest
+    needs: [resolve-pr, agent-fix-gather, agent-fix-patch, agent-fix-verify]
+    if: always() && needs.agent-fix-patch.outputs.have_patch == 'true'
+    env:
+      REPO: ${{ github.repository }}
+      PR_NUMBER: ${{ needs.resolve-pr.outputs.pr_number }}
+      HEAD_SHA: ${{ needs.resolve-pr.outputs.head_sha }}
+      HEAD_BRANCH: ${{ needs.resolve-pr.outputs.head_branch }}
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-pr.outputs.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download patch
+        uses: actions/download-artifact@v4
+        with:
+          name: agent-fix-patch-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/agentfix-patch
+
+      - name: Re-apply patch (validated paths only)
+        id: apply
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          D="$RUNNER_TEMP/agentfix-patch"
+          gh api "repos/$REPO/pulls/$PR_NUMBER/files" --paginate --jq '.[].filename' > "$D/changed.txt"
+          python3 - "$D" <<'PY'
+          import json, os, re, sys
+
+          d = sys.argv[1]
+          ws = os.path.realpath(os.getcwd())
+          patch = json.load(open(os.path.join(d, "patch.json")))
+          changed = {l.strip() for l in open(os.path.join(d, "changed.txt")) if l.strip()}
+          test_re = re.compile(r"(^|/)(__tests__|tests?)/|\.(test|spec)\.[cm]?[jt]sx?$|(^|/)test_[^/]*\.py$|_test\.py$")
+          safe_re = re.compile(r"^[A-Za-z0-9._@+/-]+$")
+          written, rejected = [], []
+          for f in patch["files"]:
+              p = f["path"]
+              parts = p.split("/")
+              ok = (
+                  safe_re.match(p) is not None
+                  and not p.startswith("/")
+                  and ".." not in parts
+                  and ".git" not in parts
+                  and parts[0] != ".github"
+              )
+              target = os.path.join(ws, p)
+              if ok:
+                  real = os.path.realpath(target)
+                  ok = real.startswith(ws + os.sep)
+              if ok and os.path.lexists(target):
+                  ok = (not os.path.islink(target)) and p in changed
+              elif ok:
+                  ok = test_re.search(p) is not None
+              if not ok:
+                  rejected.append(p)
+                  continue
+              os.makedirs(os.path.dirname(target), exist_ok=True)
+              with open(target, "w", newline="") as fh:
+                  fh.write(f["content"])
+              written.append(p)
+          open(os.path.join(d, "written.txt"), "w").write("\n".join(written) + ("\n" if written else ""))
+          open(os.path.join(d, "rejected.txt"), "w").write("\n".join(rejected) + ("\n" if rejected else ""))
+          PY
+          if [ -s "$D/written.txt" ]; then
+            echo "applied=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "applied=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Commit and push
         id: push
-        if: steps.apply.outputs.state == 'applied' && steps.verify.outcome == 'success'
+        if: steps.apply.outputs.applied == 'true' && needs.agent-fix-verify.outputs.verified == 'true'
         env:
           TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
@@ -670,8 +756,10 @@ jobs:
           D="$RUNNER_TEMP/agentfix-patch"
           git config user.name "arami-bot[bot]"
           git config user.email "5046379+arami-bot[bot]@users.noreply.github.com"
-          # Verify ran PR code: ignore any hooks it may have planted.
           xargs -a "$D/written.txt" -d '\n' git add --
+          # The commit must contain exactly the validated files.
+          git diff --cached --name-only | sort > "$D/staged.txt"
+          sort "$D/written.txt" | diff - "$D/staged.txt"
           git -c core.hooksPath=/dev/null commit -m "fix: auto-fix CI failures (openclaw)"
           sha=$(git rev-parse HEAD)
           auth=$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)
@@ -681,20 +769,17 @@ jobs:
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
       - name: Comment result and mark attempted
-        if: always() && steps.apply.outcome != 'skipped'
+        if: always() && steps.apply.outcome == 'success'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          STATE: ${{ steps.apply.outputs.state }}
-          VERIFY: ${{ steps.verify.outcome }}
+          APPLIED: ${{ steps.apply.outputs.applied }}
+          VERIFIED: ${{ needs.agent-fix-verify.outputs.verified }}
           PUSHED_SHA: ${{ steps.push.outputs.sha }}
           FAILURES: ${{ needs.agent-fix-gather.outputs.failures }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
           D="$RUNNER_TEMP/agentfix-patch"
-          if [ "$STATE" = "stale" ]; then
-            exit 0
-          fi
           summary=$(jq -r '.summary | gsub("@"; "@​") | gsub("<!--"; "<​!--")' "$D/patch.json")
           rejected=""
           if [ -s "$D/rejected.txt" ]; then
@@ -702,14 +787,14 @@ jobs:
           fi
           if [ -n "$PUSHED_SHA" ]; then
             result="Verified with the repo's verify command and pushed ${PUSHED_SHA}."
-          elif [ "$STATE" = "applied" ]; then
+          elif [ "$APPLIED" = "true" ] && [ "$VERIFIED" != "true" ]; then
             result="The proposed change failed verification, so nothing was pushed. Run: ${RUN_URL}"
+          elif [ "$APPLIED" = "true" ]; then
+            result="The change was verified but the push did not complete. Run: ${RUN_URL}"
           else
             result="No change was proposed or accepted."
           fi
-          {
-            printf '**Agent fix (openclaw)** for failed checks: %s\n\n%s\n\n%s\n%s' "$FAILURES" "$summary" "$result" "$rejected"
-          } > "$D/comment.md"
+          printf '**Agent fix (openclaw)** for failed checks: %s\n\n%s\n\n%s\n%s' "$FAILURES" "$summary" "$result" "$rejected" > "$D/comment.md"
           gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file "$D/comment.md"
           gh api "repos/$REPO/issues/$PR_NUMBER/labels" -f "labels[]=ci-autofix" --silent || true
 
