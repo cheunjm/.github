@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       runner:
-        description: "Runner label (e.g., mac-studio for the self-hosted runner)"
+        description: "Runner label for engine: openclaw (e.g. mac-studio). The Claude engine ignores it and always runs on a hosted runner."
         required: false
         type: string
         default: "ubuntu-latest"
@@ -30,7 +30,9 @@ jobs:
   review:
     name: Review
     if: inputs.engine != 'openclaw'
-    runs-on: ${{ inputs.runner }}
+    # The Claude path uses Bash and checks out PR code, so it always runs on a hosted (sandboxed)
+    # runner. Only the tool-less openclaw job below honours the runner input.
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: write
