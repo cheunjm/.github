@@ -3,10 +3,17 @@ name: Auto Label
 on:
   pull_request:
     types: [opened]
+  workflow_call:
+    inputs:
+      runner:
+        description: 'Runner label (e.g., mac-studio for the self-hosted runner)'
+        required: false
+        type: string
+        default: 'ubuntu-latest'
 
 jobs:
   decision-log:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner || 'ubuntu-latest' }}
     if: >
       startsWith(github.event.pull_request.head.ref, 'feat/') ||
       startsWith(github.event.pull_request.head.ref, 'fix/')
