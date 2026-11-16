@@ -124,18 +124,30 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.PKG_READ_TOKEN || steps.app-token.outputs.token }}
         run: npm ci
 
+      # setup-python's macOS installer hardcodes /Users/runner, which the
+      # self-hosted Mac Studio runner cannot create, so macOS uses the host
+      # python3 inside a venv (Homebrew python refuses a bare pip install).
       - name: Setup Python
-        if: steps.skip-check.outputs.skip != 'true' && inputs.python_version != ''
+        if: steps.skip-check.outputs.skip != 'true' && inputs.python_version != '' && runner.os != 'macOS'
         uses: actions/setup-python@v5
         with:
           python-version: ${{ inputs.python_version }}
 
       - name: Install Python dependencies
-        if: steps.skip-check.outputs.skip != 'true' && inputs.python_version != ''
+        if: steps.skip-check.outputs.skip != 'true' && inputs.python_version != '' && runner.os != 'macOS'
         run: |
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
           pip install ruff==0.16.8 || true
+
+      - name: Install Python dependencies (macOS venv)
+        if: steps.skip-check.outputs.skip != 'true' && inputs.python_version != '' && runner.os == 'macOS'
+        run: |
+          python3 -m venv "$RUNNER_TEMP/autofix-venv"
+          if [ -f requirements.txt ]; then "$RUNNER_TEMP/autofix-venv/bin/pip" install -r requirements.txt; fi
+          if [ -f requirements-dev.txt ]; then "$RUNNER_TEMP/autofix-venv/bin/pip" install -r requirements-dev.txt; fi
+          "$RUNNER_TEMP/autofix-venv/bin/pip" install ruff==0.16.8 || true
+          echo "$RUNNER_TEMP/autofix-venv/bin" >> "$GITHUB_PATH"
 
       - name: Run format fix
         if: steps.skip-check.outputs.skip != 'true' && inputs.format_fix_command != ''
