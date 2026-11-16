@@ -50,6 +50,10 @@ jobs:
               echo "  updated"
             elif echo "$out" | grep -q 'HTTP 422'; then
               echo "  no update needed or merge conflict (HTTP 422)"
+            elif echo "$out" | grep -q "stacked PR"; then
+              # GitHub does not support update-branch for stacked PRs (HTTP 403);
+              # the stack is kept current from its stack page, so skip it.
+              echo "  skipped: stacked PR branches cannot be updated via this endpoint"
             else
               echo "::warning::PR #$pr update failed: $out"
               failed=1
