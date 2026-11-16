@@ -29,7 +29,7 @@ on:
         required: false
         default: "ubuntu-latest"
       engine:
-        description: "Agent engine for agent-fix: claude (tool-using Claude on a hosted runner) or openclaw (tool-less model call on the runner input, patch applied and verified on a hosted runner)"
+        description: "Agent engine for agent-fix: claude (tool-using Claude on a hosted runner), openclaw (tool-less model call on the runner input, patch applied and verified on a hosted runner) or none (no agent-fix; use for public repos, which must not use a self-hosted runner)"
         type: string
         required: false
         default: "claude"
@@ -239,7 +239,7 @@ jobs:
     needs: [resolve-pr, script-fix]
     if: >
       always() &&
-      inputs.engine != 'openclaw' &&
+      inputs.engine == 'claude' &&
       needs.resolve-pr.outputs.has_pr == 'true' &&
       needs.resolve-pr.result == 'success' &&
       github.event.workflow_run.name == 'CI'
