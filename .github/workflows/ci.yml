@@ -12,5 +12,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Run actionlint
         run: |
-          go install github.com/rhysd/actionlint/cmd/actionlint@latest
+          # Pinned: @latest lets a new release change what blocks every PR. The Go
+          # checksum database verifies the exact version. Bump deliberately.
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
           "$(go env GOPATH)/bin/actionlint" -color -shellcheck=""
