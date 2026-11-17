@@ -32,7 +32,8 @@ jobs:
     uses: cheunjm/.github/.github/workflows/openwiki-update.yml@main
     with:
       runner: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
-      model_id: claude-sonnet
+      model_id: gpt-6.1-sol
+      use_responses_api: true
       init: ${{ inputs.init || false }}
       # use_app: true     # repos with required status checks
       # changeset: true   # repos that require a changeset check (claude-statusline, crosscheck)

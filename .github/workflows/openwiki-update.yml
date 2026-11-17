@@ -50,6 +50,11 @@ on:
         description: "Model alias exposed by the endpoint"
         required: true
         type: string
+      use_responses_api:
+        description: "Use the Responses API (for endpoints that serve models in Responses mode)"
+        required: false
+        type: boolean
+        default: false
       init:
         description: "Generate the initial wiki (opens a PR for review, never merges)"
         required: false
@@ -121,6 +126,7 @@ jobs:
           OPENAI_COMPATIBLE_API_KEY: ${{ secrets.LITELLM_API_KEY }}
           OPENAI_COMPATIBLE_BASE_URL: ${{ inputs.base_url }}
           OPENWIKI_MODEL_ID: ${{ inputs.model_id }}
+          OPENWIKI_OPENAI_COMPATIBLE_USE_RESPONSES_API: ${{ inputs.use_responses_api }}
         run: openwiki code "$MODE_FLAG" --print
 
       - name: Stage generated docs
