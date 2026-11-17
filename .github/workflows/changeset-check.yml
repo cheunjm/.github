@@ -1,0 +1,79 @@
+name: Changeset check
+
+# Fails a PR that does not add a changeset. Every PR (and every stack layer)
+# needs its own `.changeset/*.md`; docs/CI-only PRs add an empty one
+# (`npx changeset add --empty`). The Version Packages PR is exempt.
+#
+# Callers must name their workflow `changeset` (ci-autofix keys off that name):
+#
+#   name: changeset
+#   on:
+#     pull_request:
+#       types: [opened, synchronize, reopened, ready_for_review]
+#   jobs:
+#     changeset:
+#       uses: cheunjm/.github/.github/workflows/changeset-check.yml@main
+#       permissions:
+#         contents: read
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: "Runner label (e.g., mac-studio for the self-hosted runner)"
+        required: false
+        type: string
+        default: "ubuntu-latest"
+      changesets-version:
+        description: "Pinned @changesets/cli version"
+        required: false
+        type: string
+        default: "2.30.0"
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    # The Version Packages PR consumes changesets instead of adding them.
+    if: ${{ !startsWith(github.head_ref, 'changeset-release/') }}
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require a new changeset file
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          # Diff against the PR's own base (not main) so each stack layer
+          # needs its own changeset.
+          git fetch --no-tags origin "$BASE_REF"
+          if [ ! -f .changeset/config.json ]; then
+            echo "::error::No .changeset/config.json in this repo. Add changesets (see cheunjm/.github CLAUDE.md)."
+            exit 1
+          fi
+          added=$(git diff --name-only --diff-filter=A "origin/$BASE_REF...HEAD" \
+            | grep -E '^\.changeset/.+\.md$' | grep -v '^\.changeset/README\.md$' || true)
+          if [ -z "$added" ]; then
+            echo "::error::This PR adds no changeset. Run 'npx changeset' (or 'npx changeset add --empty' for docs/CI-only changes) and commit the file."
+            exit 1
+          fi
+          echo "Changesets added by this PR:"
+          echo "$added"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Validate changesets
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          CHANGESETS_VERSION: ${{ inputs.changesets-version }}
+        run: |
+          # Parses every changeset and rejects unknown package names, so a bad
+          # file fails here and not later in the Version Packages PR.
+          npx --yes "@changesets/cli@$CHANGESETS_VERSION" status --since="origin/$BASE_REF"

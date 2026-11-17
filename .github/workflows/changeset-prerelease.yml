@@ -1,0 +1,101 @@
+name: Changeset prerelease
+
+# Enters or exits changesets pre mode by opening a PR. Replaces the per-repo
+# prerelease.yml copies that pushed straight to the default branch.
+#
+# Caller:
+#
+#   name: Prerelease
+#   on:
+#     workflow_dispatch:
+#       inputs:
+#         phase:
+#           type: choice
+#           options: [enter-dev, enter-rc, release-stable]
+#   jobs:
+#     prerelease:
+#       uses: cheunjm/.github/.github/workflows/changeset-prerelease.yml@main
+#       with:
+#         phase: ${{ inputs.phase }}
+#       permissions:
+#         contents: write
+#         pull-requests: write
+#       secrets: inherit
+
+on:
+  workflow_call:
+    inputs:
+      phase:
+        description: "enter-dev | enter-rc | release-stable"
+        required: true
+        type: string
+      runner:
+        required: false
+        type: string
+        default: "ubuntu-latest"
+      changesets-version:
+        required: false
+        type: string
+        default: "2.30.0"
+    secrets:
+      BOT_APP_ID:
+        required: true
+      BOT_PRIVATE_KEY:
+        required: true
+
+jobs:
+  prerelease:
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Apply phase
+        env:
+          PHASE: ${{ inputs.phase }}
+          CLI_VERSION: ${{ inputs.changesets-version }}
+        run: |
+          cs="npx --yes @changesets/cli@$CLI_VERSION"
+          case "$PHASE" in
+            enter-dev) $cs pre exit || true; $cs pre enter dev; msg="chore: enter dev prerelease mode" ;;
+            enter-rc)  $cs pre exit || true; $cs pre enter rc;  msg="chore: enter rc prerelease mode" ;;
+            release-stable) $cs pre exit; msg="chore: exit prerelease mode (stable release)" ;;
+            *) echo "::error::unknown phase '$PHASE'"; exit 1 ;;
+          esac
+          echo "COMMIT_MSG=$msg" >> "$GITHUB_ENV"
+
+      - name: Open PR
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PHASE: ${{ inputs.phase }}
+          BASE: ${{ github.ref_name }}
+        run: |
+          if git diff --quiet && [ -z "$(git status --porcelain)" ]; then
+            echo "No changes; already in the requested mode."
+            exit 0
+          fi
+          branch="chore/changeset-pre-$PHASE-$GITHUB_RUN_ID"
+          git config user.name "arami-bot[bot]"
+          git config user.email "arami-bot[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add -A .changeset
+          git commit -m "$COMMIT_MSG"
+          git push origin "$branch"
+          gh pr create --base "$BASE" --head "$branch" \
+            --title "$COMMIT_MSG" \
+            --body "Changesets pre mode change (\`$PHASE\`). Merge to apply."
