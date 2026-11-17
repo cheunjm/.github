@@ -393,6 +393,7 @@ jobs:
     outputs:
       run: ${{ steps.decide.outputs.run }}
       failures: ${{ steps.decide.outputs.failures }}
+      head_sha: ${{ steps.decide.outputs.tip }}
     env:
       REPO: ${{ github.repository }}
       PR_NUMBER: ${{ needs.resolve-pr.outputs.pr_number }}
@@ -432,6 +433,11 @@ jobs:
             echo "::notice::no test/typecheck/build/codecov failure; nothing to fix"
             exit 0
           fi
+          # script-fix may have pushed a style commit since the CI run started, so the patch
+          # must be based on the branch tip now, not the head the event saw. (The auto-fix loop
+          # guard above deliberately keeps using the event head.)
+          tip=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.head.sha')
+          echo "tip=$tip" >> "$GITHUB_OUTPUT"
           echo "failures=$failures" >> "$GITHUB_OUTPUT"
           echo "run=true" >> "$GITHUB_OUTPUT"
 
@@ -439,7 +445,7 @@ jobs:
         if: steps.decide.outputs.run == 'true'
         uses: actions/checkout@v4
         with:
-          ref: ${{ needs.resolve-pr.outputs.head_sha }}
+          ref: ${{ steps.decide.outputs.tip }}
           fetch-depth: 1
           persist-credentials: false
 
@@ -573,7 +579,7 @@ jobs:
   agent-fix-verify:
     name: Agent Fix (openclaw) - verify
     runs-on: ubuntu-latest
-    needs: [resolve-pr, agent-fix-patch]
+    needs: [resolve-pr, agent-fix-gather, agent-fix-patch]
     if: always() && needs.agent-fix-patch.outputs.have_patch == 'true' && inputs.verify_command != ''
     outputs:
       verified: ${{ steps.result.outputs.verified }}
@@ -584,7 +590,7 @@ jobs:
       - name: Checkout PR head (no credentials)
         uses: actions/checkout@v4
         with:
-          ref: ${{ needs.resolve-pr.outputs.head_sha }}
+          ref: ${{ needs.agent-fix-gather.outputs.head_sha }}
           fetch-depth: 1
           persist-credentials: false
 
@@ -676,7 +682,7 @@ jobs:
     env:
       REPO: ${{ github.repository }}
       PR_NUMBER: ${{ needs.resolve-pr.outputs.pr_number }}
-      HEAD_SHA: ${{ needs.resolve-pr.outputs.head_sha }}
+      HEAD_SHA: ${{ needs.agent-fix-gather.outputs.head_sha }}
       HEAD_BRANCH: ${{ needs.resolve-pr.outputs.head_branch }}
     steps:
       - name: Generate GitHub App token
@@ -689,7 +695,7 @@ jobs:
       - name: Checkout PR head
         uses: actions/checkout@v4
         with:
-          ref: ${{ needs.resolve-pr.outputs.head_sha }}
+          ref: ${{ needs.agent-fix-gather.outputs.head_sha }}
           fetch-depth: 0
           persist-credentials: false
 
