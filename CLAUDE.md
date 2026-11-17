@@ -40,7 +40,8 @@ Other repos call these via `uses: cheunjm/.github/.github/workflows/{name}.yml@m
 | `ci-autofix.yml` | `workflow_run` of `CI` / `changeset` (auto-fixes format/lint on files the PR changed only, adds missing changesets, skips fork PRs; optional `agent-fix` job attempts test/typecheck/build failures; `engine: openclaw` replaces Claude with a tool-less openclaw patch loop: model call on the `runner`, patch validated, applied and checked by `verify_command` on a hosted runner, pushed only if it passes) |
 | `agent-review.yml` | Pull request opened/synchronized (optional agent add-on: auto-review + PR body summary; nothing may depend on it). `engine: openclaw` + `runner: mac-studio` runs it as a tool-less openclaw model call on the Studio instead of Claude |
 | `notify-merge.yml` | Push to default branch (parameterized: `slack_channel`, `repo_label`) |
+| `auto-label.yml` | Pull request opened (adds the `decision-log` label to `feat/` and `fix/` branches; the calling job must grant `pull-requests: write`; this repo also triggers it directly) |
 
 Every callable workflow takes an optional `runner` input (default `ubuntu-latest`) that sets `runs-on`. Pass a self-hosted label (e.g. `runner: mac-studio`) to run on the Mac Studio. Self-hosted jobs run on macOS, so only use it on private repos and with steps that don't assume Linux. Jobs that give an agent tools (`agent-fix`, the Claude engine of `agent-review`) ignore the input and always run on GitHub-hosted `ubuntu-latest`: the Studio has no isolation, so a tool-using agent there would run as your user. `ci-autofix.yml` handles this for its Python path: on macOS it skips `actions/setup-python` (its installer hardcodes `/Users/runner`) and installs into a venv on the host `python3`.
 
-Local to this repo, not callable (no `workflow_call`): `ci.yml` (actionlint on workflow changes), `auto-label.yml`.
+Local to this repo, not callable (no `workflow_call`): `ci.yml` (actionlint on workflow changes).
