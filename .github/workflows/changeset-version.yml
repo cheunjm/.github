@@ -1,0 +1,137 @@
+name: Changeset version
+
+# Keeps one "Version Packages" PR open per repo (updated in place on every
+# push to the default branch) and optionally publishes. Opened with the
+# arami-bot app token so the PR triggers CI.
+#
+# The changesets tooling is pinned here and installed ephemerally
+# (--no-save) so repos do not carry @changesets/* dependencies. Changesets
+# resolves the changelog plugin from the repo, so it cannot come from npx.
+#
+# Caller:
+#
+#   name: Release
+#   on:
+#     push:
+#       branches: [main]
+#     workflow_dispatch:
+#   concurrency:
+#     group: release
+#     cancel-in-progress: false
+#   jobs:
+#     version:
+#       uses: cheunjm/.github/.github/workflows/changeset-version.yml@main
+#       permissions:
+#         contents: write
+#         pull-requests: write
+#       secrets: inherit
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: "Runner label (e.g., mac-studio for the self-hosted runner)"
+        required: false
+        type: string
+        default: "ubuntu-latest"
+      node-version:
+        required: false
+        type: string
+        default: "20"
+      install-command:
+        description: "Project install step run before the tooling install (e.g. 'npm ci --legacy-peer-deps'). Empty skips it."
+        required: false
+        type: string
+        default: ""
+      registry-url:
+        description: "npm registry for setup-node (e.g. https://npm.pkg.github.com). Empty uses the default."
+        required: false
+        type: string
+        default: ""
+      scope:
+        description: "npm scope for setup-node (e.g. @aramiworks)"
+        required: false
+        type: string
+        default: ""
+      publish:
+        description: "Publish command (e.g. 'npx changeset publish'). Empty opens/updates the version PR only."
+        required: false
+        type: string
+        default: ""
+      title:
+        required: false
+        type: string
+        default: "chore: version packages"
+      create-github-releases:
+        required: false
+        type: boolean
+        default: true
+      changesets-version:
+        description: "Pinned @changesets/cli version"
+        required: false
+        type: string
+        default: "2.30.0"
+      changelog-github-version:
+        description: "Pinned @changesets/changelog-github version"
+        required: false
+        type: string
+        default: "0.6.0"
+    secrets:
+      BOT_APP_ID:
+        required: true
+      BOT_PRIVATE_KEY:
+        required: true
+      PKG_READ_TOKEN:
+        description: "Token used as NODE_AUTH_TOKEN for the install step (private packages)"
+        required: false
+
+jobs:
+  version:
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          registry-url: ${{ inputs.registry-url }}
+          scope: ${{ inputs.scope }}
+
+      - name: Install project dependencies
+        if: ${{ inputs.install-command != '' }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.PKG_READ_TOKEN }}
+          INSTALL_COMMAND: ${{ inputs.install-command }}
+        run: bash -c "$INSTALL_COMMAND"
+
+      - name: Install changesets tooling (ephemeral)
+        env:
+          CLI_VERSION: ${{ inputs.changesets-version }}
+          CHANGELOG_VERSION: ${{ inputs.changelog-github-version }}
+        run: |
+          npm install --no-save --no-package-lock --no-audit --no-fund \
+            "@changesets/cli@$CLI_VERSION" "@changesets/changelog-github@$CHANGELOG_VERSION"
+
+      - name: Version PR / publish
+        uses: changesets/action@v1
+        with:
+          version: npx changeset version
+          publish: ${{ inputs.publish }}
+          title: ${{ inputs.title }}
+          commit: ${{ inputs.title }}
+          createGithubReleases: ${{ inputs.create-github-releases }}
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
