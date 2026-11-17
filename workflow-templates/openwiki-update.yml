@@ -5,7 +5,9 @@ name: OpenWiki Update
 # a setup PR for review and never merges. Stagger the cron minute/hour per repo so the shared
 # self-hosted runner does not queue every repo at once.
 #
-# Needs repo secrets: LITELLM_API_KEY, APP_ID, APP_PRIVATE_KEY (see the reusable workflow).
+# Needs the repo secret LITELLM_API_KEY and the repo setting "Allow GitHub Actions to create
+# and approve pull requests". Repos with required status checks also set `use_app: true`
+# below and add APP_ID / APP_PRIVATE_KEY (see the reusable workflow).
 
 on:
   workflow_dispatch:
@@ -18,7 +20,8 @@ on:
     - cron: "0 9 * * 1"
 
 permissions:
-  contents: read
+  contents: write
+  pull-requests: write
 
 concurrency:
   group: openwiki-update
@@ -31,5 +34,6 @@ jobs:
       runner: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
       model_id: claude-sonnet
       init: ${{ inputs.init || false }}
+      # use_app: true     # repos with required status checks
       # changeset: true   # repos that require a changeset check (claude-statusline, crosscheck)
     secrets: inherit
