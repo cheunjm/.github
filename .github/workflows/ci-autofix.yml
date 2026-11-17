@@ -658,6 +658,8 @@ jobs:
         continue-on-error: true
         env:
           VERIFY_COMMAND: ${{ inputs.verify_command }}
+          # Read-only packages token, the same one the repo's own CI gives PR code. Never the App token.
+          NODE_AUTH_TOKEN: ${{ secrets.PKG_READ_TOKEN }}
         run: bash -euo pipefail -c "$VERIFY_COMMAND"
 
       - name: Record result
