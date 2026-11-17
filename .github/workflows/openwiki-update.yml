@@ -1,0 +1,223 @@
+name: OpenWiki Update
+
+# Reusable: generate or update a repository's OpenWiki (https://github.com/langchain-ai/openwiki)
+# through an OpenAI-compatible endpoint (LiteLLM), open a docs PR, and merge it.
+#
+# Update runs (init: false) squash-merge the PR themselves, only when every changed
+# path is under openwiki/ (plus .changeset/ when `changeset` is true) and a diff-only
+# secret scan is clean. The merge subject carries [skip ci] so push-triggered deploy
+# workflows do not run for bot docs commits. Any guard or scan failure leaves the PR
+# open and fails the run. Init runs (init: true) never merge: the setup PR also adds
+# the AGENTS.md / CLAUDE.md pointers, which a human reviews.
+#
+# Caller needs these secrets (pass with `secrets: inherit`):
+#   LITELLM_API_KEY   key for the OpenAI-compatible endpoint
+#   APP_ID            GitHub App id (Contents + Pull requests: write on the repo)
+#   APP_PRIVATE_KEY   that App's private key
+# The App token is used because PRs opened with GITHUB_TOKEN do not trigger CI.
+# Protected branches: the merge falls back to --auto, which needs "Allow auto-merge".
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: "Runner label (e.g., mac-studio for the self-hosted runner)"
+        required: false
+        type: string
+        default: "ubuntu-latest"
+      base_url:
+        description: "OpenAI-compatible base URL (LiteLLM)"
+        required: false
+        type: string
+        default: "http://127.0.0.1:4000/v1"
+      model_id:
+        description: "Model alias exposed by the endpoint"
+        required: true
+        type: string
+      init:
+        description: "Generate the initial wiki (opens a PR for review, never merges)"
+        required: false
+        type: boolean
+        default: false
+      changeset:
+        description: "Add an empty changeset so a required changeset check passes"
+        required: false
+        type: boolean
+        default: false
+      openwiki_version:
+        description: "Pinned openwiki npm version"
+        required: false
+        type: string
+        default: "0.5.0"
+    secrets:
+      LITELLM_API_KEY:
+        required: true
+      APP_ID:
+        required: true
+      APP_PRIVATE_KEY:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  update:
+    name: OpenWiki ${{ inputs.init && 'init' || 'update' }}
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 120
+    steps:
+      - name: Create GitHub App token
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          token: ${{ steps.app.outputs.token }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
+      - name: Install OpenWiki
+        env:
+          OPENWIKI_VERSION: ${{ inputs.openwiki_version }}
+        run: |
+          set -euo pipefail
+          npm install --prefix "$RUNNER_TEMP/openwiki" "openwiki@${OPENWIKI_VERSION}" mermaid@11.16.0 jsdom@29.1.1
+          echo "$RUNNER_TEMP/openwiki/node_modules/.bin" >> "$GITHUB_PATH"
+
+      - name: Run OpenWiki
+        id: openwiki
+        continue-on-error: true
+        env:
+          MODE_FLAG: ${{ inputs.init && '--init' || '--update' }}
+          OPENWIKI_PROVIDER: openai-compatible
+          OPENAI_COMPATIBLE_API_KEY: ${{ secrets.LITELLM_API_KEY }}
+          OPENAI_COMPATIBLE_BASE_URL: ${{ inputs.base_url }}
+          OPENWIKI_MODEL_ID: ${{ inputs.model_id }}
+        run: openwiki code "$MODE_FLAG" --print
+
+      - name: Remove transient OpenWiki run state
+        if: ${{ !cancelled() }}
+        run: rm -f -- openwiki/.run.json
+
+      - name: Add empty changeset
+        if: ${{ !cancelled() && inputs.changeset && !inputs.init }}
+        run: |
+          set -euo pipefail
+          if [ -n "$(git status --porcelain -- openwiki)" ]; then
+            mkdir -p .changeset
+            printf -- '---\n---\n\nUpdate OpenWiki documentation.\n' > .changeset/openwiki-docs.md
+          fi
+
+      - name: Guard changed paths
+        id: guard
+        if: ${{ !cancelled() }}
+        env:
+          ALLOW_CHANGESET: ${{ inputs.changeset }}
+          IS_INIT: ${{ inputs.init }}
+        run: |
+          set -euo pipefail
+          bad=""
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            case "$f" in
+              openwiki/*) ;;
+              .changeset/openwiki-docs.md) [ "$ALLOW_CHANGESET" = "true" ] || bad="$bad $f" ;;
+              AGENTS.md|CLAUDE.md) [ "$IS_INIT" = "true" ] || bad="$bad $f" ;;
+              *) bad="$bad $f" ;;
+            esac
+          done < <(git status --porcelain --untracked-files=all | sed -E 's/^.{3}//')
+          if [ -n "$bad" ]; then
+            echo "::error::Changes outside the allowed documentation paths:$bad"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Scan changes for secrets
+        id: scan
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          # Mark new files intent-to-add so the diff includes them. Only existing paths:
+          # git aborts the whole command on a pathspec that matches nothing.
+          scan_paths=()
+          for p in openwiki AGENTS.md CLAUDE.md .changeset; do
+            if [ -e "$p" ]; then scan_paths+=("$p"); fi
+          done
+          if [ "${#scan_paths[@]}" -eq 0 ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git add -N -- "${scan_paths[@]}"
+          # Added lines only. Token-shaped strings and obvious credential assignments.
+          patterns='AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|sk-ant-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{32,}|xox[baprs]-[A-Za-z0-9-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|eyJ[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{10,}|(api[_-]?key|secret|token|password|passwd)["'"'"']?[[:space:]]*[:=][[:space:]]*["'"'"']?[A-Za-z0-9_+/=-]{20,}'
+          hits="$(git diff -U0 HEAD -- "${scan_paths[@]}" | grep -E '^\+' | grep -vE '^\+\+\+' | grep -iE "$patterns" || true)"
+          if [ -n "$hits" ]; then
+            echo "::error::Possible secret in generated docs. Matching lines are not printed; review the PR diff."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create OpenWiki pull request
+        id: create-pr
+        if: ${{ !cancelled() }}
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          token: ${{ steps.app.outputs.token }}
+          add-paths: |
+            openwiki
+            AGENTS.md
+            CLAUDE.md
+            .changeset/openwiki-docs.md
+          branch: ${{ inputs.init && 'openwiki/init' || 'openwiki/update' }}
+          commit-message: "docs: ${{ inputs.init && 'initialize' || 'update' }} OpenWiki [skip ci]"
+          title: "docs: ${{ inputs.init && 'initialize' || 'update' }} OpenWiki"
+          body: |
+            Automated OpenWiki documentation ${{ inputs.init && 'setup' || 'update' }}.
+
+            - OpenWiki result: `${{ steps.openwiki.outcome }}`
+            - Path guard: `${{ steps.guard.outputs.ok }}`
+            - Secret scan: `${{ steps.scan.outputs.ok }}`
+            ${{ inputs.init && '- Initial setup: review this PR; it is never merged automatically.' || '- Merged automatically only when the result, guard and scan all pass.' }}
+
+      - name: Merge the update pull request
+        if: ${{ !inputs.init && steps.openwiki.outcome == 'success' && steps.guard.outputs.ok == 'true' && steps.scan.outputs.ok == 'true' && steps.create-pr.outputs.pull-request-number != '' }}
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
+        run: |
+          set -euo pipefail
+          [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]
+          subject="docs: update OpenWiki [skip ci]"
+          if ! gh pr merge "$PR_NUMBER" --squash --delete-branch --subject "$subject" --body ""; then
+            echo "Direct merge refused (branch protection); enabling auto-merge."
+            gh pr merge "$PR_NUMBER" --auto --squash --subject "$subject" --body ""
+          fi
+
+      - name: Disable auto-merge after a failed run
+        if: ${{ !inputs.init && (steps.openwiki.outcome == 'failure' || steps.guard.outputs.ok == 'false' || steps.scan.outputs.ok == 'false') && steps.create-pr.outputs.pull-request-number != '' }}
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
+        run: |
+          [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]
+          gh pr merge --disable-auto "$PR_NUMBER" || true
+
+      - name: Annotate pull request
+        if: ${{ !cancelled() && steps.create-pr.outputs.pull-request-url != '' }}
+        env:
+          PR_URL: ${{ steps.create-pr.outputs.pull-request-url }}
+        run: echo "::notice title=OpenWiki pull request::$PR_URL"
+
+      - name: Fail when the run, guard or scan failed
+        if: ${{ steps.openwiki.outcome == 'failure' || steps.guard.outputs.ok == 'false' || steps.scan.outputs.ok == 'false' }}
+        run: exit 1
