@@ -15,10 +15,13 @@ name: OpenWiki Update
 # status checks (PRs and merges made with it trigger no other workflows). Repos that require
 # status checks need `use_app: true`: a GitHub App token, so the checks run on the bot PR.
 #
-# Two jobs, so the agent never sits next to a write token: `generate` runs the agent on the
-# caller's runner with a read-only token and uploads openwiki/ as an artifact; `publish` runs
-# on a GitHub-hosted runner, validates and copies in only allowlisted regular files, then
-# guards, scans, opens the PR and merges.
+# Two jobs, so the agent never shares a job with a write token: `generate` runs the agent
+# with a read-only token and uploads openwiki/ as an artifact; `publish` validates and copies
+# in only allowlisted regular files, then guards, scans, opens the PR and merges.
+# Both run on `runner` (the Mac Studio) unless `publish_runner` overrides it. Tradeoff: a
+# self-hosted runner is persistent, so `publish` wipes its workspace (planted .git hooks or
+# config) before a fresh checkout, but it cannot stop a process the agent left running on the
+# same machine. Set publish_runner: ubuntu-latest for full isolation.
 #
 # Caller secrets (pass with `secrets: inherit`):
 #   LITELLM_API_KEY   key for the OpenAI-compatible endpoint
@@ -33,6 +36,11 @@ on:
         required: false
         type: string
         default: "ubuntu-latest"
+      publish_runner:
+        description: "Runner for the publish job (default: same as runner)"
+        required: false
+        type: string
+        default: ""
       base_url:
         description: "OpenAI-compatible base URL (LiteLLM)"
         required: false
@@ -144,19 +152,25 @@ jobs:
           if-no-files-found: warn
           retention-days: 3
 
-  # Job 2 holds the write token. It runs on a GitHub-hosted runner, so nothing the agent left
-  # on the self-hosted machine can reach it, and it never executes agent output: it copies
-  # in only allowlisted regular files, then guards, scans, opens the PR and merges.
+  # Job 2 holds the write token. It never executes agent output: it copies in only
+  # allowlisted regular files, then guards, scans, opens the PR and merges.
   publish:
     name: Publish OpenWiki ${{ inputs.init && 'init' || 'update' }}
     needs: generate
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.publish_runner || inputs.runner }}
     timeout-minutes: 30
     permissions:
       contents: write
       pull-requests: write
     steps:
+      # A persistent runner keeps the previous job's workspace, including .git/hooks and
+      # .git/config the agent could have planted. Start from an empty directory.
+      - name: Wipe workspace
+        run: |
+          set -euo pipefail
+          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+
       - name: Check out repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
