@@ -163,6 +163,11 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+    # Ignore the runner user's git config (the Studio's global config has a gh credential
+    # helper that would offer a personal token) and any system config.
+    env:
+      GIT_CONFIG_GLOBAL: /dev/null
+      GIT_CONFIG_NOSYSTEM: "1"
     steps:
       # A persistent runner keeps the previous job's workspace, including .git/hooks and
       # .git/config the agent could have planted. Start from an empty directory.
