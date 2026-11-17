@@ -14,7 +14,11 @@ name: OpenWiki Update
 # Actions to create and approve pull requests", and it is enough for repos without required
 # status checks (PRs and merges made with it trigger no other workflows). Repos that require
 # status checks need `use_app: true`: a GitHub App token, so the checks run on the bot PR.
-# The token is created only after the agent step, which sees nothing but the LiteLLM key.
+#
+# Two jobs, so the agent never sits next to a write token: `generate` runs the agent on the
+# caller's runner with a read-only token and uploads openwiki/ as an artifact; `publish` runs
+# on a GitHub-hosted runner, validates and copies in only allowlisted regular files, then
+# guards, scans, opens the PR and merges.
 #
 # Caller secrets (pass with `secrets: inherit`):
 #   LITELLM_API_KEY   key for the OpenAI-compatible endpoint
@@ -67,28 +71,25 @@ on:
         required: false
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 jobs:
-  update:
-    name: OpenWiki ${{ inputs.init && 'init' || 'update' }}
+  # Job 1 runs the untrusted agent: read-only token, nothing to publish with. It hands the
+  # generated docs to job 2 as an artifact and nothing else.
+  generate:
+    name: Generate OpenWiki ${{ inputs.init && 'init' || 'update' }}
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 120
+    permissions:
+      contents: read
+    outputs:
+      outcome: ${{ steps.openwiki.outcome }}
     steps:
-      # The agent step below must not see a write-capable credential: check out with the
-      # read-only default token, leave no credentials in git config, and only mint the
-      # App token after the agent, guard and scan have finished.
       - name: Check out repository
-        id: checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
           persist-credentials: false
-
-      - name: Record base commit
-        id: base
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -114,12 +115,97 @@ jobs:
           OPENWIKI_MODEL_ID: ${{ inputs.model_id }}
         run: openwiki code "$MODE_FLAG" --print
 
-      - name: Remove transient OpenWiki run state
+      - name: Stage generated docs
         if: ${{ !cancelled() }}
-        run: rm -f -- openwiki/.run.json
+        env:
+          IS_INIT: ${{ inputs.init }}
+        run: |
+          set -euo pipefail
+          rm -f -- openwiki/.run.json
+          stage="$RUNNER_TEMP/openwiki-out"
+          rm -rf "$stage"
+          mkdir -p "$stage"
+          if [ -d openwiki ]; then
+            cp -R openwiki "$stage/openwiki"
+          fi
+          if [ "$IS_INIT" = "true" ]; then
+            for f in AGENTS.md CLAUDE.md; do
+              if [ -f "$f" ]; then cp "$f" "$stage/$f"; fi
+            done
+          fi
+
+      - name: Upload generated docs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: openwiki-docs
+          path: ${{ runner.temp }}/openwiki-out
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 3
+
+  # Job 2 holds the write token. It runs on a GitHub-hosted runner, so nothing the agent left
+  # on the self-hosted machine can reach it, and it never executes agent output: it copies
+  # in only allowlisted regular files, then guards, scans, opens the PR and merges.
+  publish:
+    name: Publish OpenWiki ${{ inputs.init && 'init' || 'update' }}
+    needs: generate
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Download generated docs
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: openwiki-docs
+          path: ${{ runner.temp }}/artifact
+
+      - name: Validate and copy generated docs
+        id: stage
+        env:
+          IS_INIT: ${{ inputs.init }}
+        run: |
+          set -euo pipefail
+          a="$RUNNER_TEMP/artifact"
+          bad=""
+          # Only regular files and directories: no symlinks, devices or sockets.
+          if find "$a" ! -type f ! -type d -print -quit | grep -q .; then
+            bad="$bad (non-regular file in artifact)"
+          fi
+          while IFS= read -r -d '' f; do
+            rel="${f#"$a"/}"
+            case "$rel" in
+              openwiki/*) ;;
+              AGENTS.md|CLAUDE.md) [ "$IS_INIT" = "true" ] || bad="$bad $rel" ;;
+              *) bad="$bad $rel" ;;
+            esac
+          done < <(find "$a" -type f -print0)
+          if [ -n "$bad" ]; then
+            echo "::error::Unexpected content in the generated docs artifact:$bad"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          rm -rf openwiki
+          if [ -d "$a/openwiki" ]; then
+            cp -R "$a/openwiki" openwiki
+          fi
+          if [ "$IS_INIT" = "true" ]; then
+            for f in AGENTS.md CLAUDE.md; do
+              if [ -f "$a/$f" ]; then cp "$a/$f" "$f"; fi
+            done
+          fi
+          echo "ok=true" >> "$GITHUB_OUTPUT"
 
       - name: Add empty changeset
-        if: ${{ !cancelled() && inputs.changeset && !inputs.init }}
+        if: ${{ inputs.changeset && !inputs.init && steps.stage.outputs.ok == 'true' }}
         run: |
           set -euo pipefail
           if [ -n "$(git status --porcelain -- openwiki)" ]; then
@@ -129,19 +215,12 @@ jobs:
 
       - name: Guard changed paths
         id: guard
-        if: ${{ !cancelled() }}
         env:
           ALLOW_CHANGESET: ${{ inputs.changeset }}
           IS_INIT: ${{ inputs.init }}
-          BASE_SHA: ${{ steps.base.outputs.sha }}
         run: |
           set -euo pipefail
           bad=""
-          # The agent must only edit the working tree: no commits, nothing staged.
-          if [ "$(git rev-parse HEAD)" != "$BASE_SHA" ]; then
-            bad="$bad (HEAD moved)"
-          fi
-          git reset -q
           # NUL-delimited, renames split into delete + add so both paths are checked.
           while IFS= read -r -d '' f; do
             case "$f" in
@@ -150,7 +229,7 @@ jobs:
               AGENTS.md|CLAUDE.md) [ "$IS_INIT" = "true" ] || bad="$bad $f" ;;
               *) bad="$bad $f" ;;
             esac
-          done < <(git diff --no-renames --name-only -z "$BASE_SHA"; git ls-files --others --exclude-standard -z)
+          done < <(git diff --no-renames --name-only -z HEAD; git ls-files --others --exclude-standard -z)
           if [ -n "$bad" ]; then
             echo "::error::Changes outside the allowed documentation paths:$bad"
             echo "ok=false" >> "$GITHUB_OUTPUT"
@@ -160,7 +239,6 @@ jobs:
 
       - name: Scan changes for secrets
         id: scan
-        if: ${{ !cancelled() }}
         run: |
           set -euo pipefail
           # Mark new files intent-to-add so the diff includes them. Only existing paths:
@@ -186,7 +264,7 @@ jobs:
 
       - name: Create GitHub App token
         id: app
-        if: ${{ !cancelled() && inputs.use_app }}
+        if: ${{ inputs.use_app }}
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: ${{ secrets.APP_ID }}
@@ -194,7 +272,6 @@ jobs:
 
       - name: Create OpenWiki pull request
         id: create-pr
-        if: ${{ !cancelled() }}
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           token: ${{ inputs.use_app && steps.app.outputs.token || github.token }}
@@ -209,13 +286,13 @@ jobs:
           body: |
             Automated OpenWiki documentation ${{ inputs.init && 'setup' || 'update' }}.
 
-            - OpenWiki result: `${{ steps.openwiki.outcome }}`
+            - OpenWiki result: `${{ needs.generate.outputs.outcome }}`
             - Path guard: `${{ steps.guard.outputs.ok }}`
             - Secret scan: `${{ steps.scan.outputs.ok }}`
             ${{ inputs.init && '- Initial setup: review this PR; it is never merged automatically.' || '- Merged automatically only when the result, guard and scan all pass.' }}
 
       - name: Merge the update pull request
-        if: ${{ !inputs.init && steps.openwiki.outcome == 'success' && steps.guard.outputs.ok == 'true' && steps.scan.outputs.ok == 'true' && steps.create-pr.outputs.pull-request-number != '' }}
+        if: ${{ !inputs.init && needs.generate.outputs.outcome == 'success' && steps.stage.outputs.ok == 'true' && steps.guard.outputs.ok == 'true' && steps.scan.outputs.ok == 'true' && steps.create-pr.outputs.pull-request-number != '' }}
         env:
           GH_TOKEN: ${{ inputs.use_app && steps.app.outputs.token || github.token }}
           PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
@@ -243,7 +320,7 @@ jobs:
           fi
 
       - name: Disable auto-merge after a failed run
-        if: ${{ !inputs.init && (steps.openwiki.outcome == 'failure' || steps.guard.outputs.ok == 'false' || steps.scan.outputs.ok == 'false') && steps.create-pr.outputs.pull-request-number != '' }}
+        if: ${{ !inputs.init && (needs.generate.outputs.outcome != 'success' || steps.stage.outputs.ok == 'false' || steps.guard.outputs.ok == 'false' || steps.scan.outputs.ok == 'false') && steps.create-pr.outputs.pull-request-number != '' }}
         env:
           GH_TOKEN: ${{ inputs.use_app && steps.app.outputs.token || github.token }}
           PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
@@ -257,6 +334,6 @@ jobs:
           PR_URL: ${{ steps.create-pr.outputs.pull-request-url }}
         run: echo "::notice title=OpenWiki pull request::$PR_URL"
 
-      - name: Fail when the run, guard or scan failed
-        if: ${{ steps.openwiki.outcome == 'failure' || steps.guard.outputs.ok == 'false' || steps.scan.outputs.ok == 'false' }}
+      - name: Fail when generation, guard or scan failed
+        if: ${{ needs.generate.result != 'success' || needs.generate.outputs.outcome == 'failure' || steps.stage.outputs.ok == 'false' || steps.guard.outputs.ok == 'false' || steps.scan.outputs.ok == 'false' }}
         run: exit 1
