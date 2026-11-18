@@ -1,4 +1,4 @@
 Closes <!-- INF-XXX -->
 
-<!-- claude-review-summary:start -->
-<!-- claude-review-summary:end -->
+<!-- agent-review-summary:start -->
+<!-- agent-review-summary:end -->

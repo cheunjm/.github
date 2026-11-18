@@ -24,33 +24,31 @@ on:
         required: false
         default: ""
       runner:
-        description: "Runner label (e.g., mac-studio for the self-hosted runner)"
+        description: "Runner label for the script-fix and changeset-fix jobs (the self-hosted Mac Studio runner by default)"
         type: string
         required: false
-        default: "ubuntu-latest"
+        default: "mac-studio"
       agent_runner:
-        description: "Runner label for the tool-less openclaw model call (engine=openclaw). Defaults to the runner input. Set it to mac-studio to keep every other job on GitHub-hosted runners."
+        description: "Runner label for the tool-less openclaw model call. Defaults to the runner input."
         type: string
         required: false
         default: ""
       engine:
-        description: "Agent engine for agent-fix: claude (tool-using Claude on a hosted runner), openclaw (tool-less model call on the runner input, patch applied and verified on a hosted runner) or none (no agent-fix; use for public repos, which must not use a self-hosted runner)"
+        description: "Agent engine for agent-fix: openclaw (default; tool-less model call on the runner, patch applied and verified on a hosted runner) or none (no agent-fix)"
         type: string
         required: false
-        default: "claude"
+        default: "openclaw"
       openclaw_model:
-        description: "openclaw model for engine=openclaw"
+        description: "openclaw model for agent-fix"
         type: string
         required: false
         default: "openai/gpt-6.1-sol"
       verify_command:
-        description: "Shell command (install + test/typecheck/build) that must pass on a hosted runner before an openclaw patch is pushed. Required for engine=openclaw; without it nothing is pushed."
+        description: "Shell command (install + test/typecheck/build) that must pass on a hosted runner before an openclaw patch is pushed. Required for agent-fix; without it nothing is pushed."
         type: string
         required: false
         default: ""
     secrets:
-      CLAUDE_CODE_OAUTH_TOKEN:
-        required: false
       BOT_APP_ID:
         required: true
       BOT_PRIVATE_KEY:
@@ -234,146 +232,6 @@ jobs:
             --body "**CI autofix:** format/lint errors corrected automatically.
 
           Commit: ${{ steps.commit-push.outputs.commit_sha }}"
-
-  agent-fix:
-    name: Agent Fix (test/typecheck/build/codecov)
-    # Always a GitHub-hosted runner, whatever the runner input says. This job gives an agent
-    # Bash, Edit and git push on code from the PR; the ephemeral hosted VM is its sandbox. A
-    # self-hosted runner (the Mac Studio) has no isolation, so the agent would run as your user.
-    runs-on: ubuntu-latest
-    needs: [resolve-pr, script-fix]
-    if: >
-      always() &&
-      inputs.engine == 'claude' &&
-      needs.resolve-pr.outputs.has_pr == 'true' &&
-      needs.resolve-pr.result == 'success' &&
-      github.event.workflow_run.name == 'CI'
-    steps:
-      - name: Check for ci-autofix label
-        id: label-check
-        env:
-          GH_TOKEN: ${{ github.token }}
-          AGENT_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-        run: |
-          if [ -z "$AGENT_TOKEN" ]; then
-            echo "No agent token configured; agent-fix is opt-in, skipping"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          LABELS=$(gh api repos/${{ github.repository }}/issues/${{ needs.resolve-pr.outputs.pr_number }}/labels --jq '.[].name')
-          if echo "$LABELS" | grep -q "ci-autofix"; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Get failed jobs
-        if: steps.label-check.outputs.skip != 'true'
-        id: failures
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          FAILED_JOBS=$(gh api repos/${{ github.repository }}/actions/runs/${{ github.event.workflow_run.id }}/jobs \
-            --jq '[.jobs[] | select(.conclusion == "failure") | .name] | join(",")')
-
-          CODECOV_STATE=$(gh api repos/${{ github.repository }}/commits/${{ needs.resolve-pr.outputs.head_sha }}/status \
-            --jq '[.statuses[] | select(.context == "codecov/patch")] | .[0].state // "none"')
-
-          AGENT_FAILURES=""
-          if echo "$FAILED_JOBS" | grep -qi "test"; then AGENT_FAILURES="${AGENT_FAILURES}test,"; fi
-          if echo "$FAILED_JOBS" | grep -qi "typecheck"; then AGENT_FAILURES="${AGENT_FAILURES}typecheck,"; fi
-          if echo "$FAILED_JOBS" | grep -qi "build"; then AGENT_FAILURES="${AGENT_FAILURES}build,"; fi
-          if [ "$CODECOV_STATE" = "failure" ]; then AGENT_FAILURES="${AGENT_FAILURES}codecov,"; fi
-
-          AGENT_FAILURES=$(echo "$AGENT_FAILURES" | sed 's/,$//')
-          echo "failed_jobs=$FAILED_JOBS" >> "$GITHUB_OUTPUT"
-          echo "agent_failures=$AGENT_FAILURES" >> "$GITHUB_OUTPUT"
-          echo "has_agent_failures=$( [ -n "$AGENT_FAILURES" ] && echo true || echo false )" >> "$GITHUB_OUTPUT"
-
-      - name: Skip if last commit was an auto-fix
-        if: steps.label-check.outputs.skip != 'true' && steps.failures.outputs.has_agent_failures == 'true'
-        id: skip-check
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          MSG=$(gh api repos/${{ github.repository }}/commits/${{ needs.resolve-pr.outputs.head_sha }} --jq '.commit.message')
-          SUBJECT=$(echo "$MSG" | head -1)
-          if echo "$SUBJECT" | grep -qiE '^(fix|test|style): (auto-fix|ci autofix)'; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Checkout repository
-        if: >
-          steps.label-check.outputs.skip != 'true' &&
-          steps.failures.outputs.has_agent_failures == 'true' &&
-          steps.skip-check.outputs.skip != 'true'
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.resolve-pr.outputs.head_branch }}
-          fetch-depth: 0
-
-      - name: Generate GitHub App token
-        if: >
-          steps.label-check.outputs.skip != 'true' &&
-          steps.failures.outputs.has_agent_failures == 'true' &&
-          steps.skip-check.outputs.skip != 'true'
-        id: app-token
-        uses: actions/create-github-app-token@v1
-        with:
-          app-id: ${{ secrets.BOT_APP_ID }}
-          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
-
-      - name: Run agent
-        if: >
-          steps.label-check.outputs.skip != 'true' &&
-          steps.failures.outputs.has_agent_failures == 'true' &&
-          steps.skip-check.outputs.skip != 'true'
-        uses: anthropics/claude-code-action@v1
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ steps.app-token.outputs.token }}
-          allowed_bots: 'arami-bot'
-          claude_args: '--allowedTools "mcp__github,Edit,Read,Glob,Grep,Bash(npm test:*),Bash(npx:*),Bash(gh api:*),Bash(gh run view:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*)"'
-          prompt: |
-            The following CI checks failed on PR #${{ needs.resolve-pr.outputs.pr_number }} in ${{ github.repository }}:
-            **Failed checks:** ${{ steps.failures.outputs.agent_failures }}
-            **CI run:** https://github.com/${{ github.repository }}/actions/runs/${{ github.event.workflow_run.id }}
-
-            Your job:
-            1. For each failed check, read the CI logs using:
-               `gh run view ${{ github.event.workflow_run.id }} --repo ${{ github.repository }} --log-failed`
-            2. Read the relevant source code and test files to understand the context.
-            3. Diagnose the root cause of each failure.
-            4. Fix the code:
-               - **test failure** → fix the failing test or the code it tests
-               - **typecheck failure** → fix TypeScript/type errors
-               - **build failure** → fix build errors
-               - **codecov failure** → add unit tests to bring patch coverage above 80%
-            5. Commit and push your fixes to the `${{ needs.resolve-pr.outputs.head_branch }}` branch.
-
-            Rules:
-            - Use descriptive commit messages: `fix: ...` or `test: ...`
-            - Do not modify files unrelated to the failures.
-            - If a failure is pre-existing (also fails on main), skip it and note it in the summary comment.
-            - Keep changes minimal and focused.
-            - Do NOT fix formatting or lint issues — those are handled by the script tier.
-            - **Always** post a PR comment when done (whether you fixed something or not) with:
-              - What failed and what you did (fixed / skipped / pre-existing)
-              - Commit SHA if code was changed
-              - Use `gh pr comment ${{ needs.resolve-pr.outputs.pr_number }} --repo ${{ github.repository }} --body "..."`
-
-      - name: Add ci-autofix label
-        if: >
-          steps.label-check.outputs.skip != 'true' &&
-          steps.failures.outputs.has_agent_failures == 'true' &&
-          steps.skip-check.outputs.skip != 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh api repos/${{ github.repository }}/issues/${{ needs.resolve-pr.outputs.pr_number }}/labels \
-            -f "labels[]=ci-autofix" || true
 
   # engine=openclaw: the agent never gets tools. Three jobs keep each trust level apart:
   #   gather (hosted)  collects failure logs + PR files into a prompt
