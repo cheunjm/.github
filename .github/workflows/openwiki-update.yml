@@ -18,7 +18,9 @@ name: OpenWiki Update
 # Two jobs, so the agent never shares a job with a write token: `generate` runs the agent
 # with a read-only token and uploads openwiki/ as an artifact; `publish` validates and copies
 # in only allowlisted regular files, then guards, scans, opens the PR and merges.
-# Both run on `runner` (the Mac Studio) unless `publish_runner` overrides it. Tradeoff: a
+# Both run on `runner` (the Mac Studio) unless the caller repo sets the variable
+# OPENWIKI_RUNNER (a dedicated runner, so a long generation never queues behind or blocks the
+# repo's CI) or `publish_runner` overrides the publish job. Tradeoff: a
 # self-hosted runner is persistent, so `publish` wipes its workspace (planted .git hooks or
 # config) before a fresh checkout, but it cannot stop a process the agent left running on the
 # same machine. Set publish_runner: ubuntu-latest for full isolation.
@@ -91,7 +93,7 @@ jobs:
   # generated docs to job 2 as an artifact and nothing else.
   generate:
     name: Generate OpenWiki ${{ inputs.init && 'init' || 'update' }}
-    runs-on: ${{ inputs.runner }}
+    runs-on: ${{ vars.OPENWIKI_RUNNER || inputs.runner }}
     timeout-minutes: 120
     permissions:
       contents: read
@@ -164,7 +166,7 @@ jobs:
     name: Publish OpenWiki ${{ inputs.init && 'init' || 'update' }}
     needs: generate
     if: ${{ !cancelled() }}
-    runs-on: ${{ inputs.publish_runner || inputs.runner }}
+    runs-on: ${{ inputs.publish_runner || vars.OPENWIKI_RUNNER || inputs.runner }}
     timeout-minutes: 30
     permissions:
       contents: write
