@@ -297,6 +297,19 @@ jobs:
             echo "ok=true" >> "$GITHUB_OUTPUT"
           fi
 
+      # git add aborts on a pathspec that matches nothing, so list only paths that exist.
+      - name: List paths to commit
+        id: paths
+        run: |
+          set -euo pipefail
+          {
+            echo "list<<PATHS_EOF"
+            for p in openwiki AGENTS.md CLAUDE.md .changeset/openwiki-docs.md; do
+              if [ -e "$p" ]; then echo "$p"; fi
+            done
+            echo "PATHS_EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub App token
         id: app
         if: ${{ inputs.use_app }}
@@ -310,11 +323,7 @@ jobs:
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           token: ${{ inputs.use_app && steps.app.outputs.token || github.token }}
-          add-paths: |
-            openwiki
-            AGENTS.md
-            CLAUDE.md
-            .changeset/openwiki-docs.md
+          add-paths: ${{ steps.paths.outputs.list }}
           branch: ${{ inputs.init && 'openwiki/init' || 'openwiki/update' }}
           commit-message: "docs: ${{ inputs.init && 'initialize' || 'update' }} OpenWiki [skip ci]"
           title: "docs: ${{ inputs.init && 'initialize' || 'update' }} OpenWiki"
