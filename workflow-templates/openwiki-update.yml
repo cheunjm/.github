@@ -1,0 +1,40 @@
+name: OpenWiki Update
+
+# Thin caller for cheunjm/.github's reusable OpenWiki workflow. Weekly update plus manual
+# dispatch. First run: Actions > OpenWiki Update > Run workflow with init checked; that opens
+# a setup PR for review and never merges. Stagger the cron minute/hour per repo so the shared
+# self-hosted runner does not queue every repo at once.
+#
+# Needs the repo secret LITELLM_API_KEY and the repo setting "Allow GitHub Actions to create
+# and approve pull requests". Repos with required status checks also set `use_app: true`
+# below and add APP_ID / APP_PRIVATE_KEY (see the reusable workflow).
+
+on:
+  workflow_dispatch:
+    inputs:
+      init:
+        description: "Generate the initial wiki (opens a PR, never merges)"
+        type: boolean
+        default: false
+  schedule:
+    - cron: "0 9 * * 1"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: openwiki-update
+  cancel-in-progress: false
+
+jobs:
+  openwiki:
+    uses: cheunjm/.github/.github/workflows/openwiki-update.yml@main
+    with:
+      runner: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+      model_id: gpt-6.1-sol
+      use_responses_api: true
+      init: ${{ inputs.init || false }}
+      # use_app: true     # repos with required status checks
+      # changeset: true   # repos that require a changeset check (claude-statusline, crosscheck)
+    secrets: inherit
