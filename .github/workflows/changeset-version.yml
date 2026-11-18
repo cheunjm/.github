@@ -66,6 +66,11 @@ on:
         required: false
         type: boolean
         default: true
+      install-tooling:
+        description: "Install the pinned changesets tooling ephemerally. Set false for repos that already declare @changesets/cli and @changesets/changelog-github and install them via install-command (monorepos, private registries)."
+        required: false
+        type: boolean
+        default: true
       changesets-version:
         description: "Pinned @changesets/cli version"
         required: false
@@ -125,6 +130,7 @@ jobs:
           printf 'node_modules/\n' >> .git/info/exclude
 
       - name: Install changesets tooling (ephemeral)
+        if: ${{ inputs.install-tooling }}
         env:
           CLI_VERSION: ${{ inputs.changesets-version }}
           CHANGELOG_VERSION: ${{ inputs.changelog-github-version }}
