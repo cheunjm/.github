@@ -107,13 +107,13 @@ jobs:
     steps:
       - name: Generate GitHub App token
         id: app-token
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.BOT_APP_ID }}
           private-key: ${{ secrets.BOT_PRIVATE_KEY }}
 
       - name: Checkout PR branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.resolve-pr.outputs.head_branch }}
           token: ${{ steps.app-token.outputs.token }}
@@ -130,7 +130,7 @@ jobs:
 
       - name: Setup Node.js
         if: steps.skip-check.outputs.skip != 'true' && inputs.python_version == ''
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ inputs.node_version }}
           registry-url: https://npm.pkg.github.com
@@ -147,7 +147,7 @@ jobs:
       # python3 inside a venv (Homebrew python refuses a bare pip install).
       - name: Setup Python
         if: steps.skip-check.outputs.skip != 'true' && inputs.python_version != '' && runner.os != 'macOS'
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ inputs.python_version }}
 
@@ -301,7 +301,7 @@ jobs:
 
       - name: Checkout PR head (read-only)
         if: steps.decide.outputs.run == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ steps.decide.outputs.tip }}
           fetch-depth: 1
@@ -369,7 +369,7 @@ jobs:
 
       - name: Upload context
         if: steps.decide.outputs.run == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: agent-fix-ctx-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -391,7 +391,7 @@ jobs:
       OPENCLAW_MODEL: ${{ inputs.openclaw_model }}
     steps:
       - name: Download context
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: agent-fix-ctx-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/agentfix-in
@@ -427,7 +427,7 @@ jobs:
           echo "have_patch=true" >> "$GITHUB_OUTPUT"
 
       - name: Upload patch
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: agent-fix-patch-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/agentfix-in/patch.json
@@ -446,14 +446,14 @@ jobs:
       PR_NUMBER: ${{ needs.resolve-pr.outputs.pr_number }}
     steps:
       - name: Checkout PR head (no credentials)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.agent-fix-gather.outputs.head_sha }}
           fetch-depth: 1
           persist-credentials: false
 
       - name: Download patch
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: agent-fix-patch-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/agentfix-patch
@@ -547,20 +547,20 @@ jobs:
     steps:
       - name: Generate GitHub App token
         id: app-token
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.BOT_APP_ID }}
           private-key: ${{ secrets.BOT_PRIVATE_KEY }}
 
       - name: Checkout PR head
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.agent-fix-gather.outputs.head_sha }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Download patch
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: agent-fix-patch-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/agentfix-patch
@@ -680,13 +680,13 @@ jobs:
     steps:
       - name: Generate GitHub App token
         id: app-token
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.BOT_APP_ID }}
           private-key: ${{ secrets.BOT_PRIVATE_KEY }}
 
       - name: Checkout PR branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.resolve-pr.outputs.head_branch }}
           fetch-depth: 0
