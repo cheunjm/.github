@@ -30,10 +30,10 @@ on:
   workflow_call:
     inputs:
       runner:
-        description: "Runner label (e.g., mac-studio for the self-hosted runner)"
+        description: "Runner label. Empty uses the calling repo's CI_RUNNER variable (e.g. mac-studio), then ubuntu-latest."
         required: false
         type: string
-        default: "ubuntu-latest"
+        default: ""
       node-version:
         required: false
         type: string
@@ -87,7 +87,7 @@ on:
 
 jobs:
   version:
-    runs-on: ${{ inputs.runner }}
+    runs-on: ${{ inputs.runner || vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - name: Generate GitHub App token
         id: app-token

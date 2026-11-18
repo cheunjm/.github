@@ -30,9 +30,10 @@ on:
         required: true
         type: string
       runner:
+        description: "Runner label. Empty uses the calling repo's CI_RUNNER variable (e.g. mac-studio), then ubuntu-latest."
         required: false
         type: string
-        default: "ubuntu-latest"
+        default: ""
       changesets-version:
         required: false
         type: string
@@ -45,7 +46,7 @@ on:
 
 jobs:
   prerelease:
-    runs-on: ${{ inputs.runner }}
+    runs-on: ${{ inputs.runner || vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - name: Generate GitHub App token
         id: app-token
