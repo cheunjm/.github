@@ -1,0 +1,14 @@
+name: changeset
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+jobs:
+  changeset:
+    uses: ./.github/workflows/changeset-check.yml
+    permissions:
+      contents: read
