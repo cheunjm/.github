@@ -52,7 +52,7 @@ jobs:
           # needs its own changeset.
           git fetch --no-tags origin "$BASE_REF"
           if [ ! -f .changeset/config.json ]; then
-            echo "::error::No .changeset/config.json in this repo. Add changesets (see cheunjm/.github CLAUDE.md)."
+            echo "::error::No .changeset/config.json in this repo. Add changesets (see the changeset-* rows in the cheunjm/.github docs)."
             exit 1
           fi
           added=$(git diff --name-only --diff-filter=A "origin/$BASE_REF...HEAD" \
