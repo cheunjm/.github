@@ -116,6 +116,14 @@ jobs:
           INSTALL_COMMAND: ${{ inputs.install-command }}
         run: bash -c "$INSTALL_COMMAND"
 
+      - name: Keep installed tooling out of the version commit
+        run: |
+          # changesets/action commits with `git add .`. Without this, repos
+          # whose .gitignore lacks node_modules would commit the ephemeral
+          # install into the Version Packages PR.
+          mkdir -p .git/info
+          printf 'node_modules/\n' >> .git/info/exclude
+
       - name: Install changesets tooling (ephemeral)
         env:
           CLI_VERSION: ${{ inputs.changesets-version }}
