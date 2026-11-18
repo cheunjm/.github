@@ -169,12 +169,20 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-    # Ignore the runner user's git config (the Studio's global config has a gh credential
-    # helper that would offer a personal token) and any system config.
+    # Ignore system git config (see the Isolate git config step for the global one).
     env:
-      GIT_CONFIG_GLOBAL: /dev/null
       GIT_CONFIG_NOSYSTEM: "1"
     steps:
+      # The runner user's global git config (the Studio's has a gh credential helper that
+      # would offer a personal token) must not be used. Point git at an empty, writable file
+      # instead: actions that run `git config --global` (checkout, create-pull-request)
+      # need to write to it, which /dev/null does not allow.
+      - name: Isolate git config
+        run: |
+          set -euo pipefail
+          : > "$RUNNER_TEMP/gitconfig-isolated"
+          echo "GIT_CONFIG_GLOBAL=$RUNNER_TEMP/gitconfig-isolated" >> "$GITHUB_ENV"
+
       # A persistent runner keeps the previous job's workspace, including .git/hooks and
       # .git/config the agent could have planted. Start from an empty directory.
       - name: Wipe workspace
