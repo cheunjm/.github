@@ -9,7 +9,7 @@ jobs:
     name: Validate workflow YAML
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Run actionlint
         run: |
           # Pinned: @latest lets a new release change what blocks every PR. The Go
