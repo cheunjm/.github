@@ -37,7 +37,7 @@ on:
       changesets-version:
         required: false
         type: string
-        default: "2.30.0"
+        default: "3.0.3"
     secrets:
       BOT_APP_ID:
         required: true
@@ -64,7 +64,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Apply phase
         env:

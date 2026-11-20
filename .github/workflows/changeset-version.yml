@@ -37,7 +37,7 @@ on:
       node-version:
         required: false
         type: string
-        default: "20"
+        default: "22"
       install-command:
         description: "Project install step run before the tooling install (e.g. 'npm ci --legacy-peer-deps'). Empty skips it."
         required: false
@@ -75,12 +75,12 @@ on:
         description: "Pinned @changesets/cli version"
         required: false
         type: string
-        default: "2.30.0"
+        default: "3.0.3"
       changelog-github-version:
         description: "Pinned @changesets/changelog-github version"
         required: false
         type: string
-        default: "0.6.0"
+        default: "1.0.1"
     secrets:
       BOT_APP_ID:
         required: true
@@ -140,13 +140,20 @@ jobs:
 
       - name: Version PR / publish
         # Pinned to a commit: this third-party action receives the arami-bot token.
-        uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1.9.0
+        uses: changesets/action@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
         with:
-          version: npx changeset version
-          publish: ${{ inputs.publish }}
-          title: ${{ inputs.title }}
-          commit: ${{ inputs.title }}
-          createGithubReleases: ${{ inputs.create-github-releases }}
+          # v2 needs the custom token passed explicitly; checkout credentials and the
+          # GITHUB_TOKEN env below no longer count. push-with-git-cli keeps the v1
+          # behaviour (git add . plus a git push) instead of the v2 default of
+          # committing through the GitHub API.
+          github-token: ${{ steps.app-token.outputs.token }}
+          push-with-git-cli: true
+          version-script: npx changeset version
+          publish-script: ${{ inputs.publish }}
+          pr-title: ${{ inputs.title }}
+          commit-message: ${{ inputs.title }}
+          create-github-releases: ${{ inputs.create-github-releases }}
         env:
+          # changelog-github reads this while `changeset version` runs.
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
