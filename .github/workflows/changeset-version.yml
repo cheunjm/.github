@@ -37,7 +37,7 @@ on:
       node-version:
         required: false
         type: string
-        default: "20"
+        default: "22"
       install-command:
         description: "Project install step run before the tooling install (e.g. 'npm ci --legacy-peer-deps'). Empty skips it."
         required: false
@@ -75,12 +75,12 @@ on:
         description: "Pinned @changesets/cli version"
         required: false
         type: string
-        default: "2.30.0"
+        default: "3.0.3"
       changelog-github-version:
         description: "Pinned @changesets/changelog-github version"
         required: false
         type: string
-        default: "0.6.0"
+        default: "1.0.1"
     secrets:
       BOT_APP_ID:
         required: true
