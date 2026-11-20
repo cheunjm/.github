@@ -11,8 +11,8 @@ on:
         required: true
         type: string
       repo_label:
-        description: 'Human-readable repo name for the notification'
-        required: true
+        description: 'Unused since INF-1822 (the post names the repo itself); kept so callers do not break'
+        required: false
         type: string
       runner:
         description: 'Runner label (e.g., mac-studio for the self-hosted runner)'
@@ -30,7 +30,6 @@ jobs:
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL: ${{ inputs.slack_channel }}
-          REPO_LABEL: ${{ inputs.repo_label }}
           REPOSITORY: ${{ github.repository }}
           FULL_SHA: ${{ github.sha }}
         run: |
@@ -41,13 +40,38 @@ jobs:
           # Escape Slack control characters so they cannot trigger mentions/links.
           esc() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
 
-          message=$(git log -1 --pretty=format:'%s' | esc)
+          # The shared Slack post layout (agents/scripts/slack_format.py in
+          # cheunjm/dotfiles, standard in cheunjm/conventions
+          # architecture/slack-message-format.md): "<icon> [<topic>]", the outcome,
+          # bullets, a link. Written by hand because this runs on GitHub and cannot
+          # import that script. The topic is the repo name.
+          topic=$(printf '%s' "${REPOSITORY#*/}" | tr 'A-Z' 'a-z' | esc)
+
+          # A GitHub merge commit's own subject is only "Merge pull request #N from ...";
+          # the PR title is the first line of its body.
+          subject=$(git log -1 --pretty=format:'%s')
+          if [[ "$subject" == "Merge pull request #"* ]]; then
+            title=$(git log -1 --pretty=format:'%b' | sed -n '1p')
+            number=${subject#Merge pull request #}
+            number=${number%% *}
+            if [ -n "$title" ]; then subject="$title (#$number)"; fi
+          fi
+          # Cap at 200 characters, keeping a trailing " (#N)" (it finds the PR).
+          if [ "${#subject}" -gt 200 ]; then
+            suffix=""
+            if [[ "$subject" =~ (\ \(#[0-9]+\))$ ]]; then
+              suffix="${BASH_REMATCH[1]}"
+              subject="${subject%"$suffix"}"
+            fi
+            subject="${subject:0:$((199 - ${#suffix}))}…${suffix}"
+          fi
+
+          message=$(printf '%s' "$subject" | esc)
           author=$(git log -1 --pretty=format:'%an' | esc)
           short_sha=$(git log -1 --pretty=format:'%h')
-          label=$(printf '%s' "$REPO_LABEL" | esc)
 
-          text=$(printf '✅ *%s merge 완료*\n• `%s` — %s\n• 작성자: %s\n• <https://github.com/%s/commit/%s|커밋 보기>' \
-            "$label" "$short_sha" "$message" "$author" "$REPOSITORY" "$FULL_SHA")
+          text=$(printf '✅ [%s]\nmerged %s — %s\n• author: %s\n→ <https://github.com/%s/commit/%s|%s>' \
+            "$topic" "$short_sha" "$message" "$author" "$REPOSITORY" "$FULL_SHA" "$short_sha")
 
           payload=$(jq -n --arg channel "$SLACK_CHANNEL" --arg text "$text" \
             '{channel: $channel, text: $text}')
