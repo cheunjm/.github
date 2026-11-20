@@ -55,7 +55,7 @@ on:
         required: true
       PKG_READ_TOKEN:
         required: false
-        description: "PAT with read:packages on @aramiworks for npm install. Falls back to App token if unset."
+        description: "PAT with read:packages on @cheunjm for npm install. Falls back to App token if unset."
 
 jobs:
   resolve-pr:
@@ -134,7 +134,7 @@ jobs:
         with:
           node-version: ${{ inputs.node_version }}
           registry-url: https://npm.pkg.github.com
-          scope: '@aramiworks'
+          scope: '@cheunjm'
 
       - name: Install Node dependencies
         if: steps.skip-check.outputs.skip != 'true' && inputs.python_version == ''
