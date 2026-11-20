@@ -54,6 +54,11 @@ jobs:
               # GitHub does not support update-branch for stacked PRs (HTTP 403);
               # the stack is kept current from its stack page, so skip it.
               echo "  skipped: stacked PR branches cannot be updated via this endpoint"
+            elif echo "$out" | grep -q "without \`workflows\` permission"; then
+              # The App cannot push a merge that changes workflow files (every
+              # Dependabot Actions PR does). Dependabot keeps its own PRs
+              # current, so skip instead of failing the run.
+              echo "  skipped: PR changes workflow files and the App has no workflows permission"
             else
               echo "::warning::PR #$pr update failed: $out"
               failed=1
