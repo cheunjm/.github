@@ -49,7 +49,7 @@ on:
         type: string
         default: ""
       scope:
-        description: "npm scope for setup-node (e.g. @aramiworks)"
+        description: "npm scope for setup-node (e.g. @cheunjm)"
         required: false
         type: string
         default: ""
