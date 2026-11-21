@@ -126,3 +126,22 @@ Numbers are never reused, renumbered or deleted. Reverse a decision by adding a 
 - **Impact:** low
 - **Labels:** revisit
 - **Supersedes:** part of D5 (the autofix, wiki and release rows)
+
+## D12: ci-node.yml covers four Node repos, not six
+- **Problem:** D8 and the plan counted crosscheck and dotclaw as Node repos. Reading their CI for INF-1859 showed otherwise.
+- **Options:** A: keep six and stretch ci-node.yml to run ruff, mypy, unittest and shellcheck; B: correct the list.
+- **Choice:** B. `ci-node.yml` covers stock-tracker, ui, arami and starlog. crosscheck (ruff, mypy, unittest) and dotclaw (shellcheck, ruff) rename their local jobs to the pattern now and move to `ci-python.yml` and `ci-shell.yml` later, like the other non-Node repos.
+- **Rationale:** `ci-node.yml` runs `npm ci` and npm scripts. Forcing Python and shell commands into it would turn the command overrides into a second, worse shell runner.
+- **Proposed by:** ai
+- **Chosen by:** ai
+- **Impact:** low
+- **Supersedes:** part of D8 (the list of six repos)
+
+## D13: ci-node.yml interface
+- **Problem:** What the shared Node CI exposes (Q11 and Q12 in the grilling session).
+- **Options:** Filtering and extras inside the shared workflow, or callers pass booleans and overrides.
+- **Choice:** Callers keep their own `paths-filter` job (named `ci / paths`) and pass `run_*` booleans. Inputs: `runner` (`ubuntu-latest`), `node_version` (`20`), `registry_scope`, `run_lint|typecheck|test|format|audit` (true), `run_build` (false), a `*_command` override per job, and `test_reports`. Secrets `PKG_READ_TOKEN` and `CODECOV_TOKEN` are optional. The `gate` job treats skipped needs as passes.
+- **Rationale:** Filter groups differ a lot by repo (seven in stock-tracker), so they stay where the paths are; one `test_reports` flag keeps stock-tracker's JUnit and Codecov steps on the shared path.
+- **Proposed by:** ai
+- **Chosen by:** human
+- **Impact:** med

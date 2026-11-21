@@ -15,10 +15,10 @@ Constraints found while reading the repos:
 ## Scope
 **In scope**
 - Every check produced by our own workflows in every `cheunjm` repo, named `<area> / <action>`, lowercase.
-- A reusable `ci-node.yml` (lint, typecheck, test, build, format, audit, gate) used by the six Node repos: stock-tracker, ui, arami, starlog, crosscheck, dotclaw.
+- A reusable `ci-node.yml` (lint, typecheck, test, build, format, audit, gate) used by the four Node repos: stock-tracker, ui, arami, starlog (crosscheck and dotclaw are Python and shell; see D12).
 - Renaming shared-workflow jobs in this repo, with `ci-autofix.yml` accepting old and new workflow names during the transition.
 - Per-repo caller renames and Mergify rules that require only `ci / gate` and `changeset / check`.
-- Shell, Python and no-CI repos (claude-statusline, clipsync, dotfiles, engineering-log, conventions) rename their local jobs to the pattern.
+- Shell, Python and no-CI repos (crosscheck, dotclaw, claude-statusline, clipsync, dotfiles, engineering-log, conventions) rename their local jobs to the pattern.
 - A convention doc in `cheunjm/conventions`.
 
 **Out of scope** (will not do)
@@ -31,8 +31,8 @@ Constraints found while reading the repos:
 1. **Spec and convention**: this folder plus the convention PR in `cheunjm/conventions`. Done when both are merged.
 2. **Shared renames**: shared workflow jobs renamed per the vocabulary, and `ci-autofix.yml` triggers on both the old and new workflow names. Done when a test PR in a caller repo shows the new names and autofix still fires.
 3. **`ci-node.yml`**: reusable workflow with boolean-toggled jobs, command overrides, `runner` input defaulting to `ubuntu-latest`, and a `ci / gate` job that fails on any failed or cancelled need and passes on skipped. Done when one Node repo runs it end to end.
-4. **Node repos**: each of stock-tracker, ui, arami, starlog, crosscheck, dotclaw switches to `ci-node.yml`, renames its caller jobs and workflow names, and replaces its Mergify required checks with `ci / gate` and `changeset / check`. Done when each repo's PR checks list shows only `<area> / <action>` names (plus app checks) and Mergify gates on the new names.
-5. **Other repos**: claude-statusline, clipsync, dotfiles, engineering-log and conventions rename local jobs. Done when each shows only the pattern plus app checks.
+4. **Node repos**: each of stock-tracker, ui, arami and starlog switches to `ci-node.yml`, renames its caller jobs and workflow names, and replaces its Mergify required checks with `ci / gate` and `changeset / check`. Done when each repo's PR checks list shows only `<area> / <action>` names (plus app checks) and Mergify gates on the new names.
+5. **Other repos**: crosscheck, dotclaw, claude-statusline, clipsync, dotfiles, engineering-log and conventions rename local jobs. Done when each shows only the pattern plus app checks.
 6. **Cleanup**: remove the old workflow names from `ci-autofix.yml`. Done when no repo has a required check name that no workflow produces.
 
 ## Verification

@@ -1,0 +1,276 @@
+name: CI
+
+# Shared CI for npm projects: lint, typecheck, test, format, audit, build, and one
+# `gate` job that is the only CI check a repo needs to require.
+#
+# Check names (caller job id `ci`): ci / lint, ci / typecheck, ci / test,
+# ci / format, ci / audit, ci / build, ci / gate.
+#
+# Each job runs only when its run_* input is true, so a caller that path-filters
+# passes the filter result: `run_lint: ${{ needs.paths.outputs.code == 'true' }}`.
+# A skipped job counts as a pass in `gate`.
+#
+# This file sets no `permissions:` so the caller's grant is the limit. Callers
+# grant `contents: read`, plus `checks: write` when `test_reports` is true.
+#
+#   name: CI
+#   on:
+#     pull_request:
+#       types: [opened, synchronize, reopened, ready_for_review]
+#   jobs:
+#     ci:
+#       uses: cheunjm/.github/.github/workflows/ci-node.yml@main
+#       permissions:
+#         contents: read
+#       secrets: inherit
+#       with:
+#         typecheck_command: npm run check-types
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: "Runner label for every job"
+        type: string
+        required: false
+        default: "ubuntu-latest"
+      node_version:
+        description: "Node.js version"
+        type: string
+        required: false
+        default: "20"
+      registry_scope:
+        description: "npm scope to read from GitHub Packages (e.g. @cheunjm). Empty means no private registry. Needs the PKG_READ_TOKEN secret."
+        type: string
+        required: false
+        default: ""
+      run_lint:
+        type: boolean
+        required: false
+        default: true
+      run_typecheck:
+        type: boolean
+        required: false
+        default: true
+      run_test:
+        type: boolean
+        required: false
+        default: true
+      run_format:
+        type: boolean
+        required: false
+        default: true
+      run_audit:
+        type: boolean
+        required: false
+        default: true
+      run_build:
+        type: boolean
+        required: false
+        default: false
+      lint_command:
+        type: string
+        required: false
+        default: "npm run lint"
+      typecheck_command:
+        type: string
+        required: false
+        default: "npm run typecheck"
+      test_command:
+        type: string
+        required: false
+        default: "npm run test"
+      format_command:
+        type: string
+        required: false
+        default: "npm run format:check"
+      audit_command:
+        type: string
+        required: false
+        default: "npm audit --audit-level=critical --omit=dev"
+      build_command:
+        type: string
+        required: false
+        default: "npm run build"
+      test_reports:
+        description: "Upload JUnit results, publish a test report and send coverage to Codecov. The caller's test_command must emit JUnit XML (jest-junit) and the caller must grant checks: write."
+        type: boolean
+        required: false
+        default: false
+    secrets:
+      PKG_READ_TOKEN:
+        description: "PAT with read:packages, used for npm ci when registry_scope is set"
+        required: false
+      CODECOV_TOKEN:
+        description: "Codecov upload token, used when test_reports is true"
+        required: false
+
+jobs:
+  lint:
+    name: lint
+    if: ${{ inputs.run_lint }}
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: npm
+          registry-url: ${{ inputs.registry_scope != '' && 'https://npm.pkg.github.com' || '' }}
+          scope: ${{ inputs.registry_scope }}
+      - run: npm ci
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.PKG_READ_TOKEN }}
+      - name: Run lint
+        env:
+          CMD: ${{ inputs.lint_command }}
+        run: bash -euo pipefail -c "$CMD"
+
+  typecheck:
+    name: typecheck
+    if: ${{ inputs.run_typecheck }}
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: npm
+          registry-url: ${{ inputs.registry_scope != '' && 'https://npm.pkg.github.com' || '' }}
+          scope: ${{ inputs.registry_scope }}
+      - run: npm ci
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.PKG_READ_TOKEN }}
+      - name: Run typecheck
+        env:
+          CMD: ${{ inputs.typecheck_command }}
+        run: bash -euo pipefail -c "$CMD"
+
+  test:
+    name: test
+    if: ${{ inputs.run_test }}
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: npm
+          registry-url: ${{ inputs.registry_scope != '' && 'https://npm.pkg.github.com' || '' }}
+          scope: ${{ inputs.registry_scope }}
+      - run: npm ci
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.PKG_READ_TOKEN }}
+      - name: Run tests
+        env:
+          CMD: ${{ inputs.test_command }}
+          JEST_JUNIT_OUTPUT_DIR: ${{ inputs.test_reports && 'test-results' || '' }}
+          JEST_JUNIT_OUTPUT_NAME: ${{ inputs.test_reports && 'junit.xml' || '' }}
+        run: bash -euo pipefail -c "$CMD"
+      - name: Upload test results
+        if: ${{ always() && inputs.test_reports }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results
+          path: "**/test-results/"
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Test report
+        if: ${{ always() && inputs.test_reports }}
+        uses: dorny/test-reporter@v3
+        with:
+          name: Unit Tests
+          path: "**/test-results/*.xml"
+          reporter: jest-junit
+          fail-on-empty: false
+      - name: Upload coverage to Codecov
+        if: ${{ always() && inputs.test_reports }}
+        uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          flags: unit
+          fail_ci_if_error: false
+
+  format:
+    name: format
+    if: ${{ inputs.run_format }}
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: npm
+          registry-url: ${{ inputs.registry_scope != '' && 'https://npm.pkg.github.com' || '' }}
+          scope: ${{ inputs.registry_scope }}
+      - run: npm ci
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.PKG_READ_TOKEN }}
+      - name: Run format check
+        env:
+          CMD: ${{ inputs.format_command }}
+        run: bash -euo pipefail -c "$CMD"
+
+  audit:
+    name: audit
+    if: ${{ inputs.run_audit }}
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: npm
+          registry-url: ${{ inputs.registry_scope != '' && 'https://npm.pkg.github.com' || '' }}
+          scope: ${{ inputs.registry_scope }}
+      - run: npm ci
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.PKG_READ_TOKEN }}
+      - name: Run audit
+        env:
+          CMD: ${{ inputs.audit_command }}
+        run: bash -euo pipefail -c "$CMD"
+
+  build:
+    name: build
+    if: ${{ inputs.run_build }}
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: npm
+          registry-url: ${{ inputs.registry_scope != '' && 'https://npm.pkg.github.com' || '' }}
+          scope: ${{ inputs.registry_scope }}
+      - run: npm ci
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.PKG_READ_TOKEN }}
+      - name: Run build
+        env:
+          CMD: ${{ inputs.build_command }}
+        run: bash -euo pipefail -c "$CMD"
+
+  gate:
+    name: gate
+    runs-on: ${{ inputs.runner }}
+    needs: [lint, typecheck, test, format, audit, build]
+    if: ${{ always() }}
+    steps:
+      - name: Check all CI jobs
+        env:
+          RESULTS: ${{ toJSON(needs.*.result) }}
+        run: |
+          # A failed or cancelled job fails the gate; skipped jobs (path-filtered
+          # or switched off by run_*) count as a pass.
+          if echo "$RESULTS" | grep -qE '"failure"|"cancelled"'; then
+            echo "One or more CI jobs failed or were cancelled"
+            exit 1
+          fi
+          echo "All CI jobs passed or were skipped"
