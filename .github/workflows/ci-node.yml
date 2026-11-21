@@ -93,16 +93,31 @@ on:
         required: false
         default: "npm run build"
       test_reports:
-        description: "Upload JUnit results, publish a test report and send coverage to Codecov. The caller's test_command must emit JUnit XML (jest-junit) and the caller must grant checks: write."
+        description: "Upload JUnit results and publish a test report. The caller's test_command must emit JUnit XML (jest-junit) and the caller must grant checks: write."
         type: boolean
         required: false
         default: false
+      codecov:
+        description: "Send coverage to Codecov after the tests. The caller's test_command must produce coverage. Needs the CODECOV_TOKEN secret."
+        type: boolean
+        required: false
+        default: false
+      codecov_directory:
+        description: "Directory holding the coverage report (e.g. coverage). Empty lets Codecov search. When set, the directory is also uploaded as the coverage artifact."
+        type: string
+        required: false
+        default: ""
+      codecov_flags:
+        description: "Codecov flags for the upload (e.g. unit)"
+        type: string
+        required: false
+        default: ""
     secrets:
       PKG_READ_TOKEN:
         description: "PAT with read:packages, used for npm ci when registry_scope is set"
         required: false
       CODECOV_TOKEN:
-        description: "Codecov upload token, used when test_reports is true"
+        description: "Codecov upload token, used when codecov is true"
         required: false
 
 jobs:
@@ -187,12 +202,20 @@ jobs:
           reporter: jest-junit
           fail-on-empty: false
       - name: Upload coverage to Codecov
-        if: ${{ always() && inputs.test_reports }}
+        if: ${{ always() && inputs.codecov }}
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          flags: unit
+          directory: ${{ inputs.codecov_directory }}
+          flags: ${{ inputs.codecov_flags }}
           fail_ci_if_error: false
+      - name: Upload coverage artifact
+        if: ${{ always() && inputs.codecov && inputs.codecov_directory != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage
+          path: ${{ inputs.codecov_directory }}/
+          if-no-files-found: ignore
 
   format:
     name: format
