@@ -112,12 +112,20 @@ on:
         type: string
         required: false
         default: ""
+      turbo_team:
+        description: "Turborepo remote cache team (the TURBO_TEAM variable). Empty leaves remote caching off. Pair it with the TURBO_TOKEN secret."
+        type: string
+        required: false
+        default: ""
     secrets:
       PKG_READ_TOKEN:
         description: "PAT with read:packages, used for npm ci when registry_scope is set"
         required: false
       CODECOV_TOKEN:
         description: "Codecov upload token, used when codecov is true"
+        required: false
+      TURBO_TOKEN:
+        description: "Turborepo remote cache token, used with turbo_team"
         required: false
 
 jobs:
@@ -140,6 +148,8 @@ jobs:
       - name: Run lint
         env:
           CMD: ${{ inputs.lint_command }}
+          TURBO_TOKEN: ${{ inputs.turbo_team != '' && secrets.TURBO_TOKEN || '' }}
+          TURBO_TEAM: ${{ inputs.turbo_team }}
         run: bash -euo pipefail -c "$CMD"
 
   typecheck:
@@ -161,6 +171,8 @@ jobs:
       - name: Run typecheck
         env:
           CMD: ${{ inputs.typecheck_command }}
+          TURBO_TOKEN: ${{ inputs.turbo_team != '' && secrets.TURBO_TOKEN || '' }}
+          TURBO_TEAM: ${{ inputs.turbo_team }}
         run: bash -euo pipefail -c "$CMD"
 
   test:
@@ -182,6 +194,8 @@ jobs:
       - name: Run tests
         env:
           CMD: ${{ inputs.test_command }}
+          TURBO_TOKEN: ${{ inputs.turbo_team != '' && secrets.TURBO_TOKEN || '' }}
+          TURBO_TEAM: ${{ inputs.turbo_team }}
           JEST_JUNIT_OUTPUT_DIR: ${{ inputs.test_reports && 'test-results' || '' }}
           JEST_JUNIT_OUTPUT_NAME: ${{ inputs.test_reports && 'junit.xml' || '' }}
         run: bash -euo pipefail -c "$CMD"
@@ -278,6 +292,8 @@ jobs:
       - name: Run build
         env:
           CMD: ${{ inputs.build_command }}
+          TURBO_TOKEN: ${{ inputs.turbo_team != '' && secrets.TURBO_TOKEN || '' }}
+          TURBO_TEAM: ${{ inputs.turbo_team }}
         run: bash -euo pipefail -c "$CMD"
 
   gate:

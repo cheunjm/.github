@@ -165,3 +165,13 @@ Numbers are never reused, renumbered or deleted. Reverse a decision by adding a 
 - **Chosen by:** human
 - **Impact:** med
 - **Labels:** revisit
+
+## D16: ci-node.yml supports the Turborepo remote cache
+- **Problem:** stock-tracker's scripts run through `turbo run ...` and its CI sets `TURBO_TOKEN` and `TURBO_TEAM` at workflow level. A caller's workflow-level `env` does not reach a reusable workflow, so migrating would silently drop the remote cache and slow builds.
+- **Options:** A: add an optional `turbo_team` input and `TURBO_TOKEN` secret that `ci-node.yml` sets as `env` only on the lint, typecheck, test and build command steps (not on `npm ci` or third-party action steps), and only when `turbo_team` is non-empty; B: stock-tracker keeps its own CI jobs.
+- **Choice:** A. Both are optional and empty by default, so other callers are unaffected.
+- **Rationale:** B would leave the repo with the most CI on the old path, which is the problem this work removes.
+- **Proposed by:** ai
+- **Chosen by:** ai
+- **Impact:** low
+- **Not done:** PR runs can still write to the remote cache, as in stock-tracker's CI today. Making PR runs read-only is a possible follow-up once the exact Turborepo setting is verified.
