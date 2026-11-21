@@ -128,12 +128,6 @@ on:
         description: "Turborepo remote cache token, used with turbo_team"
         required: false
 
-# A caller's workflow-level env does not reach a reusable workflow, so the
-# Turborepo cache variables are set here from the input and secret above.
-env:
-  TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
-  TURBO_TEAM: ${{ inputs.turbo_team }}
-
 jobs:
   lint:
     name: lint
@@ -154,6 +148,8 @@ jobs:
       - name: Run lint
         env:
           CMD: ${{ inputs.lint_command }}
+          TURBO_TOKEN: ${{ inputs.turbo_team != '' && secrets.TURBO_TOKEN || '' }}
+          TURBO_TEAM: ${{ inputs.turbo_team }}
         run: bash -euo pipefail -c "$CMD"
 
   typecheck:
@@ -175,6 +171,8 @@ jobs:
       - name: Run typecheck
         env:
           CMD: ${{ inputs.typecheck_command }}
+          TURBO_TOKEN: ${{ inputs.turbo_team != '' && secrets.TURBO_TOKEN || '' }}
+          TURBO_TEAM: ${{ inputs.turbo_team }}
         run: bash -euo pipefail -c "$CMD"
 
   test:
@@ -196,6 +194,8 @@ jobs:
       - name: Run tests
         env:
           CMD: ${{ inputs.test_command }}
+          TURBO_TOKEN: ${{ inputs.turbo_team != '' && secrets.TURBO_TOKEN || '' }}
+          TURBO_TEAM: ${{ inputs.turbo_team }}
           JEST_JUNIT_OUTPUT_DIR: ${{ inputs.test_reports && 'test-results' || '' }}
           JEST_JUNIT_OUTPUT_NAME: ${{ inputs.test_reports && 'junit.xml' || '' }}
         run: bash -euo pipefail -c "$CMD"
@@ -292,6 +292,8 @@ jobs:
       - name: Run build
         env:
           CMD: ${{ inputs.build_command }}
+          TURBO_TOKEN: ${{ inputs.turbo_team != '' && secrets.TURBO_TOKEN || '' }}
+          TURBO_TEAM: ${{ inputs.turbo_team }}
         run: bash -euo pipefail -c "$CMD"
 
   gate:
