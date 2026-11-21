@@ -112,6 +112,11 @@ on:
         type: string
         required: false
         default: ""
+      turbo_team:
+        description: "Turborepo remote cache team (the TURBO_TEAM variable). Empty leaves remote caching off. Pair it with the TURBO_TOKEN secret."
+        type: string
+        required: false
+        default: ""
     secrets:
       PKG_READ_TOKEN:
         description: "PAT with read:packages, used for npm ci when registry_scope is set"
@@ -119,6 +124,15 @@ on:
       CODECOV_TOKEN:
         description: "Codecov upload token, used when codecov is true"
         required: false
+      TURBO_TOKEN:
+        description: "Turborepo remote cache token, used with turbo_team"
+        required: false
+
+# A caller's workflow-level env does not reach a reusable workflow, so the
+# Turborepo cache variables are set here from the input and secret above.
+env:
+  TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+  TURBO_TEAM: ${{ inputs.turbo_team }}
 
 jobs:
   lint:
