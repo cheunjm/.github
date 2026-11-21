@@ -180,7 +180,7 @@ jobs:
           retention-days: 7
       - name: Test report
         if: ${{ always() && inputs.test_reports }}
-        uses: dorny/test-reporter@v3
+        uses: dorny/test-reporter@d1b5dff021aa968b288b02285a8bf47471c5928a # v3
         with:
           name: Unit Tests
           path: "**/test-results/*.xml"
@@ -188,7 +188,7 @@ jobs:
           fail-on-empty: false
       - name: Upload coverage to Codecov
         if: ${{ always() && inputs.test_reports }}
-        uses: codecov/codecov-action@v7
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           flags: unit
