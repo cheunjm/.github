@@ -145,3 +145,23 @@ Numbers are never reused, renumbered or deleted. Reverse a decision by adding a 
 - **Proposed by:** ai
 - **Chosen by:** human
 - **Impact:** med
+
+## D14: Codecov is its own input, separate from test_reports
+- **Problem:** D13 bundled JUnit upload, test report and Codecov under one `test_reports` flag. ui's CI sends coverage to Codecov from a `coverage` folder and has no JUnit step, while stock-tracker has both, so one flag could not serve both.
+- **Options:** A: keep one flag and make ui drop Codecov or keep its own test job; B: split into `test_reports` (JUnit upload and report) and `codecov` (plus `codecov_directory`, `codecov_flags`).
+- **Choice:** B. `codecov_directory`, when set, also uploads that directory as the `coverage` artifact, which ui does today.
+- **Rationale:** Dropping Codecov from ui would lose its `codecov/*` PR statuses, and a local test job would defeat the shared workflow. No repo used `test_reports` yet, so the split breaks nothing.
+- **Proposed by:** ai
+- **Chosen by:** ai
+- **Impact:** low
+- **Supersedes:** part of D13 (the `test_reports` definition)
+
+## D15: ui's gate covers only the shared jobs
+- **Problem:** `ci / gate` inside `ci-node.yml` cannot wait on a caller's other jobs, and ui has `contrast`, `chromatic` and `e2e` beyond the shared six.
+- **Options:** A: `ci / gate` covers only the shared jobs and the extras stay informational; B: add a ui-only aggregate that waits on everything.
+- **Choice:** A. Mergify in ui requires `ci / gate` and `changeset / check`.
+- **Rationale:** ui's current Mergify rules require names no job produces (`lint-type-build`, `unit-test`, `e2e-web`, `check`), so nothing blocks on e2e or Chromatic today; the e2e job has a history of Chrome failures; Chromatic visual review is a human approval anyway.
+- **Proposed by:** ai
+- **Chosen by:** human
+- **Impact:** med
+- **Labels:** revisit
