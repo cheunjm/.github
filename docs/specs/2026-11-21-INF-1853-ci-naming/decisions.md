@@ -109,3 +109,19 @@ Numbers are never reused, renumbered or deleted. Reverse a decision by adding a 
 - **Proposed by:** ai
 - **Chosen by:** human
 - **Impact:** low
+
+## D11: Action words for autofix, wiki and release, and local job names
+- **Problem:** D5 left the `autofix / <step>` words open (marked revisit), and reading the shared files showed `wiki / update` and `release / publish` do not match how those workflows are built.
+- **Options:** A: keep D5's words; B: derive them from the real jobs.
+- **Choice:** B.
+  - ci-autofix jobs: `autofix / resolve-pr`, `autofix / format-lint`, `autofix / agent-gather`, `autofix / agent-patch`, `autofix / agent-verify`, `autofix / agent-push`, `autofix / changeset`. The script-fix job fixes both format and lint, so `format-lint` replaces `format`.
+  - openwiki has two jobs, so it is `wiki / generate` and `wiki / publish` (there is no single `wiki / update`).
+  - The Release workflow only calls `changeset-version.yml`, which publishes inside the same job via `changesets/action`. Its check is `changeset / version` (caller job id `changeset`), so there is no `release / publish`.
+  - A repo-local job, which GitHub does not prefix, sets `name: "<area> / <action>"` itself (for example `ci / actionlint`, `decisions / dispatch`).
+  - `ci-autofix` accepts the workflow names `changeset` and `Changeset`. The agent-fix gather step matches failed job names with `grep -i test|typecheck|build`, which still matches `ci / test`, `ci / typecheck` and `ci / build`.
+- **Rationale:** Names should describe the job that exists. Keeping a name that does not match its workflow would break the rule that the action says what the job does.
+- **Proposed by:** ai
+- **Chosen by:** ai
+- **Impact:** low
+- **Labels:** revisit
+- **Supersedes:** part of D5 (the autofix, wiki and release rows)

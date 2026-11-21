@@ -1,4 +1,4 @@
-name: CI Autofix
+name: Autofix
 
 on:
   workflow_call:
@@ -59,7 +59,7 @@ on:
 
 jobs:
   resolve-pr:
-    name: Resolve PR
+    name: resolve-pr
     runs-on: ${{ inputs.runner }}
     if: >
       github.event.workflow_run.event == 'pull_request' &&
@@ -97,7 +97,7 @@ jobs:
           echo "head_sha=$(echo "$PR_JSON" | jq -r '.head.sha')" >> "$GITHUB_OUTPUT"
 
   script-fix:
-    name: Script Fix (format/lint)
+    name: format-lint
     runs-on: ${{ inputs.runner }}
     needs: resolve-pr
     if: >
@@ -239,7 +239,7 @@ jobs:
   #   apply  (hosted)  validates paths, applies, runs verify_command, pushes only if it passes
   # The Studio never checks out or runs PR code.
   agent-fix-gather:
-    name: Agent Fix (openclaw) - gather
+    name: agent-gather
     runs-on: ubuntu-latest
     needs: [resolve-pr, script-fix]
     if: >
@@ -377,7 +377,7 @@ jobs:
           retention-days: 1
 
   agent-fix-patch:
-    name: Agent Fix (openclaw) - model call
+    name: agent-patch
     # Runs on agent_runner (falls back to the runner input), normally the Mac Studio. It only reads the prompt artifact and makes
     # one tool-less model call; it has no checkout and no secrets.
     runs-on: ${{ inputs.agent_runner || inputs.runner }}
@@ -435,7 +435,7 @@ jobs:
 
   # Verify runs PR code, so this job holds no App token. Its only output is pass/fail.
   agent-fix-verify:
-    name: Agent Fix (openclaw) - verify
+    name: agent-verify
     runs-on: ubuntu-latest
     needs: [resolve-pr, agent-fix-gather, agent-fix-patch]
     if: always() && needs.agent-fix-patch.outputs.have_patch == 'true' && inputs.verify_command != ''
@@ -535,7 +535,7 @@ jobs:
   # Mints the App token only here, on a fresh checkout that never ran PR code. The patch is
   # re-validated and re-applied from the artifact; nothing is carried over from the verify job.
   agent-fix-push:
-    name: Agent Fix (openclaw) - push and report
+    name: agent-push
     runs-on: ubuntu-latest
     needs: [resolve-pr, agent-fix-gather, agent-fix-patch, agent-fix-verify]
     if: always() && needs.agent-fix-patch.outputs.have_patch == 'true'
@@ -670,12 +670,12 @@ jobs:
           gh api "repos/$REPO/issues/$PR_NUMBER/labels" -f "labels[]=ci-autofix" --silent || true
 
   changeset-fix:
-    name: Changeset Fix (auto-add missing changeset)
+    name: changeset
     runs-on: ${{ inputs.runner }}
     needs: resolve-pr
     if: >
       needs.resolve-pr.outputs.has_pr == 'true' &&
-      github.event.workflow_run.name == 'changeset' &&
+      contains(fromJSON('["changeset","Changeset"]'), github.event.workflow_run.name) &&
       github.event.workflow_run.conclusion == 'failure'
     steps:
       - name: Generate GitHub App token

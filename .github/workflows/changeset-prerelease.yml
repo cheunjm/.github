@@ -1,4 +1,4 @@
-name: Changeset prerelease
+name: Changeset
 
 # Enters or exits changesets pre mode by opening a PR. Replaces the per-repo
 # prerelease.yml copies that pushed straight to the default branch.

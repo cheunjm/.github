@@ -1,4 +1,4 @@
-name: OpenWiki Update
+name: Wiki
 
 # Thin caller for cheunjm/.github's reusable OpenWiki workflow. Weekly update plus manual
 # dispatch. First run: Actions > OpenWiki Update > Run workflow with init checked; that opens
@@ -28,7 +28,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  openwiki:
+  wiki:
     uses: cheunjm/.github/.github/workflows/openwiki-update.yml@main
     with:
       runner: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}

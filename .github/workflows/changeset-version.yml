@@ -1,4 +1,4 @@
-name: Changeset version
+name: Changeset
 
 # Keeps one "Version Packages" PR open per repo (updated in place on every
 # push to the default branch) and optionally publishes. Opened with the

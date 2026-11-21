@@ -1,13 +1,14 @@
 # TEMPLATE — not a live workflow here. Copy to .github/workflows/ in a new repo.
 # Needs the BOT_APP_ID and BOT_PRIVATE_KEY secrets and the decision-log label,
 # and pairs with auto-label.yml. See the new-repo-bootstrap skill in cheunjm/dotfiles.
-name: Dispatch Decision Log
+name: Decisions
 on:
   pull_request:
     types: [closed]
 
 jobs:
   dispatch:
+    name: decisions / dispatch
     if: >
       github.event.pull_request.merged == true &&
       contains(github.event.pull_request.labels.*.name, 'decision-log')
