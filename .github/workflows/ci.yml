@@ -6,7 +6,7 @@ on:
 
 jobs:
   actionlint:
-    name: ci / actionlint
+    name: Validate workflow YAML
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

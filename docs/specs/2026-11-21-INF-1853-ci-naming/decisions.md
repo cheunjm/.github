@@ -118,6 +118,7 @@ Numbers are never reused, renumbered or deleted. Reverse a decision by adding a 
   - openwiki has two jobs, so it is `wiki / generate` and `wiki / publish` (there is no single `wiki / update`).
   - The Release workflow only calls `changeset-version.yml`, which publishes inside the same job via `changesets/action`. Its check is `changeset / version` (caller job id `changeset`), so there is no `release / publish`.
   - A repo-local job, which GitHub does not prefix, sets `name: "<area> / <action>"` itself (for example `ci / actionlint`, `decisions / dispatch`).
+  - This repo's own `ci.yml` job stays `Validate workflow YAML` for now: branch protection on `cheunjm/.github` requires that exact name (plus `changeset / check`), so it is renamed to `ci / actionlint` only in the same step that updates the protection rule.
   - `ci-autofix` accepts the workflow names `changeset` and `Changeset`. The agent-fix gather step matches failed job names with `grep -i test|typecheck|build`, which still matches `ci / test`, `ci / typecheck` and `ci / build`.
 - **Rationale:** Names should describe the job that exists. Keeping a name that does not match its workflow would break the rule that the action says what the job does.
 - **Proposed by:** ai
