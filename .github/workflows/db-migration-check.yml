@@ -1,4 +1,4 @@
-name: DB Migration Check
+name: Migrations
 
 # Deterministic (no LLM) scan of SQL migrations added or changed in a PR.
 # Flags patterns that commonly cause data loss, locks, or breaking deploys,
@@ -31,7 +31,7 @@ permissions:
 
 jobs:
   check:
-    name: DB migration check
+    name: scan
     runs-on: ${{ inputs.runner }}
     steps:
       - name: Checkout

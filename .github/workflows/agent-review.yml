@@ -1,4 +1,4 @@
-name: Agent Review
+name: Review
 
 on:
   workflow_call:
@@ -26,7 +26,7 @@ on:
 
 jobs:
   review-openclaw:
-    name: Review (openclaw)
+    name: openclaw
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 10
     continue-on-error: true

@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 jobs:
-  version:
+  changeset:
     uses: ./.github/workflows/changeset-version.yml
     permissions:
       contents: write

@@ -1,13 +1,13 @@
 # TEMPLATE — not a live workflow here. Copy to .github/workflows/ in a new repo.
 # Calls the reusable auto-label workflow in cheunjm/.github. Needs the
 # decision-log label and pairs with dispatch-decision-log.yml.
-name: Auto Label
+name: Labels
 on:
   pull_request:
     types: [opened]
 
 jobs:
-  decision-log:
+  labels:
     permissions:
       pull-requests: write
     uses: cheunjm/.github/.github/workflows/auto-label.yml@main

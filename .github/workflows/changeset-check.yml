@@ -1,12 +1,13 @@
-name: Changeset check
+name: Changeset
 
 # Fails a PR that does not add a changeset. Every PR (and every stack layer)
 # needs its own `.changeset/*.md`; docs/CI-only PRs add an empty one
 # (`npx changeset add --empty`). The Version Packages PR is exempt.
 #
-# Callers must name their workflow `changeset` (ci-autofix keys off that name):
+# Callers must name their workflow `changeset` or `Changeset` (ci-autofix keys off that
+# name and accepts both). Prefer `Changeset` and a job id of `changeset`:
 #
-#   name: changeset
+#   name: Changeset
 #   on:
 #     pull_request:
 #       types: [opened, synchronize, reopened, ready_for_review]

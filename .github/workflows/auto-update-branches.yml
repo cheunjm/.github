@@ -1,4 +1,4 @@
-name: Auto-update PR branches
+name: Branches
 
 on:
   workflow_call:
