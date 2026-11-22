@@ -271,7 +271,16 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: e2e-android
-          path: ${{ inputs.artifact-path }}
+          # Reports, screenshots and logs only: skip build outputs (APKs, app
+          # bundles, Xcode derived data) that callers may keep in the same dir.
+          path: |
+            ${{ inputs.artifact-path }}
+            !${{ inputs.artifact-path }}/**/*.apk
+            !${{ inputs.artifact-path }}/**/*.app/**
+            !${{ inputs.artifact-path }}/**/Build/**
+            !${{ inputs.artifact-path }}/**/Index.noindex/**
+            !${{ inputs.artifact-path }}/**/ModuleCache.noindex/**
+            !${{ inputs.artifact-path }}/**/SDKStatCaches.noindex/**
           if-no-files-found: ignore
           include-hidden-files: true
 
@@ -435,7 +444,14 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: e2e-ios
-          path: ${{ inputs.artifact-path }}
+          path: |
+            ${{ inputs.artifact-path }}
+            !${{ inputs.artifact-path }}/**/*.apk
+            !${{ inputs.artifact-path }}/**/*.app/**
+            !${{ inputs.artifact-path }}/**/Build/**
+            !${{ inputs.artifact-path }}/**/Index.noindex/**
+            !${{ inputs.artifact-path }}/**/ModuleCache.noindex/**
+            !${{ inputs.artifact-path }}/**/SDKStatCaches.noindex/**
           if-no-files-found: ignore
           include-hidden-files: true
 
@@ -539,6 +555,13 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: e2e-web
-          path: ${{ inputs.artifact-path }}
+          path: |
+            ${{ inputs.artifact-path }}
+            !${{ inputs.artifact-path }}/**/*.apk
+            !${{ inputs.artifact-path }}/**/*.app/**
+            !${{ inputs.artifact-path }}/**/Build/**
+            !${{ inputs.artifact-path }}/**/Index.noindex/**
+            !${{ inputs.artifact-path }}/**/ModuleCache.noindex/**
+            !${{ inputs.artifact-path }}/**/SDKStatCaches.noindex/**
           if-no-files-found: ignore
           include-hidden-files: true

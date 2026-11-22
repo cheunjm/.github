@@ -36,6 +36,8 @@ Constraints:
 3. arami iOS: the same caller adds `ios` on the Studio. Done when: the iOS job passes on the Studio in the same dispatch run, and the simulator it created is deleted afterwards.
 4. Concurrency: a push during a running e2e queues instead of cancelling. Done when: observed on arami's Version PR, or on a dispatch run started while another runs.
 
+Status (2026-11-23): stages 2 and 3 done. arami run [45044908918](https://github.com/cheunjm/arami/actions/runs/45044908918) passed `e2e / android` and `e2e / ios`, all four flows each. Stage 4 is not observed yet. Failure-artifact exclusions (build outputs) are untested, because only a failed run uploads.
+
 ## Verification
 - Stage 1: actionlint (the .github `ci.yml` check) plus `act`-free review. A reusable workflow cannot be run until a caller calls it, so stage 1 is proven by stage 2.
 - Stage 2-3: `gh workflow run E2E --repo cheunjm/arami --ref <branch>` on the arami PR branch, then `gh run watch`. The arami caller points at the .github branch (`@feat/INF-1908-e2e-maestro`) until stage 1 merges, then is switched to `@main` before arami merges.
@@ -47,6 +49,7 @@ Constraints:
 - arami's iOS build works on Xcode 26.4 with one of the Studio's runtimes. arami's docs warn that Xcode 27 builds fail on the iOS 27 simulator; an `ios-runtime` input lets arami pin `iOS-17-0` if 26.4 fails.
 - ~~No other local Supabase stack on the Studio holds the default ports while the iOS job runs.~~ False: stock-tracker's stack restarts with Docker Desktop. Callers move their CI stack to other ports (D11).
 - The Studio's Docker config (keychain credential helper, Scout hooks) does not work in a runner service; the iOS job uses an empty `DOCKER_CONFIG` (D10).
+- A self-hosted Mac must not keep `~/Library/Android`, `~/Library/Developer/CoreSimulator/Devices` or `~/.android` on a volume the runner cannot read (D12, D13).
 
 ## Terms
 - **Caller**: an app repo workflow that `uses:` the shared workflow.

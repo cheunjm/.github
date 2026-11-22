@@ -101,3 +101,21 @@ Numbers are never reused, renumbered or deleted. Reverse a decision by adding a 
 - **Proposed by:** ai
 - **Chosen by:** ai
 - **Impact:** low
+
+## D12: Keeping Maestro away from host Android state on iOS
+- **Problem:** On iOS, Maestro still touches Android state at startup: its analytics list `<ANDROID_USER_HOME>/avd`, and its Android client reads `~/.android/adbkey` from the JVM's `user.home`. On the Studio `~/.android` is on an exFAT USB volume the runner cannot read, so Maestro blocked before running a flow.
+- **Options:** A: the iOS job sets `ANDROID_USER_HOME` to an empty dir, turns off Maestro CLI analytics, and gives the Maestro JVM a job-local `user.home` (`JAVA_TOOL_OPTIONS`); B: move `~/.android` off the USB volume.
+- **Choice:** A.
+- **Rationale:** Protects every host, not just the Studio, and needs no machine change. An iOS run never needs Android state.
+- **Proposed by:** ai
+- **Chosen by:** ai
+- **Impact:** low
+
+## D13: Android SDK and simulator devices on the Mac Studio
+- **Problem:** Two more host folders lived on exFAT USB volumes that a background runner cannot use: `~/Library/Android` (Xcode's build service lists `sdk/ndk` at startup and blocked forever) and `~/Library/Developer/CoreSimulator/Devices` (CoreSimulator cannot create devices on exFAT: "stuck in creation state").
+- **Options:** A: grant the runner Full Disk Access; B: move both to the internal disk; C: work around in the workflow (`ANDROID_NDK_ROOT`, a custom simulator set).
+- **Choice:** B, made on the host (not in this repo). The full Android SDK (48 GB on exFAT, 25 GB on APFS) was copied and verified, caches were cleared to make room, and the old symlinks were kept as `*.usb-symlink`.
+- **Rationale:** Builds stop depending on a USB drive being plugged in and readable. Workflow workarounds would rely on Xcode internals.
+- **Proposed by:** ai
+- **Chosen by:** human
+- **Impact:** med
