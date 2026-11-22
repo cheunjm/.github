@@ -70,6 +70,10 @@ on:
         description: "Install the Supabase CLI (needed for a local Supabase stack)"
         type: boolean
         default: false
+      supabase-version:
+        description: "Supabase CLI version. Pinned: `latest` makes an unauthenticated GitHub API call that hits rate limits"
+        type: string
+        default: "2.78.1"
       android-runner:
         type: string
         default: "ubuntu-latest"
@@ -101,6 +105,12 @@ on:
 
 permissions:
   contents: read
+
+# Explicit bash runs steps with -eo pipefail, so `build | tee log` fails when
+# the build fails (the implicit default is `bash -e` without pipefail).
+defaults:
+  run:
+    shell: bash
 
 env:
   E2E_ARTIFACTS: ${{ inputs.artifact-path }}
@@ -151,7 +161,7 @@ jobs:
       - uses: supabase/setup-cli@1dedf2c611547ede7232d26866dd3c56ab903bbb # v1
         if: inputs.supabase-cli
         with:
-          version: latest
+          version: ${{ inputs.supabase-version }}
 
       - name: Install dependencies
         env:
@@ -279,13 +289,19 @@ jobs:
     steps:
       # The Studio runner service's PATH has no /usr/local/bin (Docker Desktop's
       # CLI) and no Java selected; Maestro needs Java 17.
+      # The runner service's PATH lacks Docker Desktop's CLI (/usr/local/bin).
+      # Expose only `docker` through a job-local dir: /usr/local/bin also holds
+      # stale tools (a 2021 CocoaPods) that would shadow Homebrew's.
       # Docker Desktop's own config sends pulls through the keychain credential
       # helper and Scout hooks, which hang in a runner service with no GUI
       # session. The images e2e needs are public, so use an empty config and
       # talk to Docker Desktop's socket directly.
       - name: Prepare macOS host
         run: |
-          echo "/usr/local/bin" >> "$GITHUB_PATH"
+          shim="$RUNNER_TEMP/e2e-bin"
+          mkdir -p "$shim"
+          if [ -x /usr/local/bin/docker ]; then ln -sf /usr/local/bin/docker "$shim/docker"; fi
+          echo "$shim" >> "$GITHUB_PATH"
           echo "JAVA_HOME=$(/usr/libexec/java_home -v 17)" >> "$GITHUB_ENV"
           export DOCKER_CONFIG="$RUNNER_TEMP/docker-config"
           mkdir -p "$DOCKER_CONFIG"
@@ -295,7 +311,7 @@ jobs:
             export DOCKER_HOST="unix://$HOME/.docker/run/docker.sock"
             echo "DOCKER_HOST=$DOCKER_HOST" >> "$GITHUB_ENV"
           fi
-          if ! /usr/local/bin/docker info > /dev/null 2>&1; then
+          if ! "$shim/docker" info > /dev/null 2>&1; then
             echo "::warning::Docker is not running on this runner; a local backend in setup-command will fail."
           fi
           xcodebuild -version
@@ -312,7 +328,7 @@ jobs:
       - uses: supabase/setup-cli@1dedf2c611547ede7232d26866dd3c56ab903bbb # v1
         if: inputs.supabase-cli
         with:
-          version: latest
+          version: ${{ inputs.supabase-version }}
 
       - name: Install dependencies
         env:
@@ -341,25 +357,33 @@ jobs:
           curl -fsSL "https://get.maestro.mobile.dev" | bash
           echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
 
-      # A throwaway simulator on the newest iPhone of the chosen runtime, deleted
-      # in the last step so the runner never accumulates devices.
+      # A throwaway simulator on the newest iOS runtime (or the one matching
+      # ios-runtime) and the newest plain iPhone that runtime supports. It is
+      # created from the runtime's device types, so the host needs no existing
+      # simulators, and deleted in the last step.
       - name: Boot simulator
         env:
           RUNTIME_FILTER: ${{ inputs.ios-runtime }}
         run: |
           # shellcheck disable=SC2016 # the node program is single-quoted on purpose
-          read -r device_type runtime < <(xcrun simctl list devices available -j | node -e '
-            const { devices } = JSON.parse(require("fs").readFileSync(0));
+          read -r device_type runtime < <(xcrun simctl list runtimes available -j | node -e '
+            const { runtimes } = JSON.parse(require("fs").readFileSync(0));
             const filter = process.env.RUNTIME_FILTER || ".iOS-";
-            const version = (r) => r.split(".iOS-")[1].split("-").map(Number);
-            const [runtime, iphone] = Object.entries(devices)
-              .filter(([r]) => r.includes(filter))
-              .map(([r, list]) => [r, list.find((d) => /^iPhone \d/.test(d.name))])
-              .filter(([, d]) => d)
-              .sort(([a], [b]) => version(a)[0] - version(b)[0] || version(a)[1] - version(b)[1])
+            const semver = (v) => v.split(".").map(Number);
+            const cmp = (a, b) => { const x = semver(a), y = semver(b);
+              for (let i = 0; i < Math.max(x.length, y.length); i++) { const d = (x[i] ?? 0) - (y[i] ?? 0); if (d) return d; }
+              return 0; };
+            const runtime = runtimes
+              .filter((r) => r.platform === "iOS" && r.identifier.includes(filter))
+              .sort((a, b) => cmp(a.version, b.version))
               .at(-1);
-            if (!runtime) { console.error(`no iPhone simulator for runtime filter ${filter}`); process.exit(1); }
-            console.log(iphone.deviceTypeIdentifier, runtime)')
+            if (!runtime) { console.error(`no available iOS runtime matches "${filter}"`); process.exit(1); }
+            const iphones = (runtime.supportedDeviceTypes ?? [])
+              .map((d) => ({ d, n: Number((d.name.match(/^iPhone (\d+)/) ?? [])[1]) }))
+              .filter(({ n }) => n > 0)
+              .sort((a, b) => a.n - b.n || b.d.name.length - a.d.name.length);
+            if (!iphones.length) { console.error(`runtime ${runtime.identifier} supports no iPhone`); process.exit(1); }
+            console.log(iphones.at(-1).d.identifier, runtime.identifier)')
           udid=$(xcrun simctl create "E2E ${GITHUB_REPOSITORY#*/} ${GITHUB_RUN_ID}" "$device_type" "$runtime")
           echo "E2E_DEVICE=$udid" >> "$GITHUB_ENV"
           echo "Booting $device_type on $runtime as $udid"
@@ -423,7 +447,7 @@ jobs:
       - uses: supabase/setup-cli@1dedf2c611547ede7232d26866dd3c56ab903bbb # v1
         if: inputs.supabase-cli
         with:
-          version: latest
+          version: ${{ inputs.supabase-version }}
 
       - name: Install dependencies
         env:
