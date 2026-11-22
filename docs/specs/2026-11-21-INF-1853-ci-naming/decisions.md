@@ -175,3 +175,22 @@ Numbers are never reused, renumbered or deleted. Reverse a decision by adding a 
 - **Chosen by:** ai
 - **Impact:** low
 - **Not done:** PR runs can still write to the remote cache, as in stock-tracker's CI today. Making PR runs read-only is a possible follow-up once the exact Turborepo setting is verified.
+
+## D17: INF-1918 repos use the shared callers, including `auto-update-branches`
+- **Problem:** six repos were missed by the plan. maps-organizer, star-organizer and portfolio carried an inline `auto-update-branches` that rebases every open PR, which differs from the shared workflow (merges `main` into open non-draft same-repo PRs, never rebases).
+- **Options:** A: keep the inline copy and only rename it; B: replace it with the shared caller, as dotfiles already did in INF-1866.
+- **Choice:** B. maps-organizer, portfolio and graph-engine also call `ci-node.yml` (format and audit off, as before); mem0 and star-organizer keep local Python jobs with a new `ci / gate`.
+- **Rationale:** The goal is as many reusable workflows as possible, and a second behavior for the same name would confuse the `branches / update` check. The repos are private and solo, so the rebase-versus-merge difference is low risk.
+- **Proposed by:** ai
+- **Chosen by:** ai
+- **Impact:** low
+
+## D18: Drop the lowercase `changeset` name and rename this repo's actionlint job
+- **Problem:** D-earlier decisions kept `changeset` accepted in `ci-autofix.yml` and left `Validate workflow YAML` unrenamed until every repo was migrated and branch protection could change in the same step.
+- **Options:** A: keep both names forever; B: after every repo uses `Changeset`, accept only `Changeset`, rename the job to `ci / actionlint`, and change branch protection in two steps (require only `changeset / check`, merge, then add `ci / actionlint`).
+- **Choice:** B. A scan of every non-archived `cheunjm` repo found no workflow named `changeset`. The same step moves this repo's direct `auto-label.yml` trigger into a `labels.yml` caller, so its check reads `labels / decision-log` instead of the bare `decision-log`.
+- **Rationale:** Required checks match by exact name, so a rename in one PR would block that PR. Two steps avoid a window where nothing is required on the wrong name.
+- **Proposed by:** ai
+- **Chosen by:** human
+- **Impact:** med
+- **Supersedes:** the "stays `Validate workflow YAML` for now" note under the earlier ci.yml decision
