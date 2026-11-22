@@ -188,7 +188,7 @@ Numbers are never reused, renumbered or deleted. Reverse a decision by adding a 
 ## D18: Drop the lowercase `changeset` name and rename this repo's actionlint job
 - **Problem:** D-earlier decisions kept `changeset` accepted in `ci-autofix.yml` and left `Validate workflow YAML` unrenamed until every repo was migrated and branch protection could change in the same step.
 - **Options:** A: keep both names forever; B: after every repo uses `Changeset`, accept only `Changeset`, rename the job to `ci / actionlint`, and change branch protection in two steps (require only `changeset / check`, merge, then add `ci / actionlint`).
-- **Choice:** B. A scan of every non-archived `cheunjm` repo found no workflow named `changeset`.
+- **Choice:** B. A scan of every non-archived `cheunjm` repo found no workflow named `changeset`. The same step moves this repo's direct `auto-label.yml` trigger into a `labels.yml` caller, so its check reads `labels / decision-log` instead of the bare `decision-log`.
 - **Rationale:** Required checks match by exact name, so a rename in one PR would block that PR. Two steps avoid a window where nothing is required on the wrong name.
 - **Proposed by:** ai
 - **Chosen by:** human
