@@ -114,6 +114,10 @@ defaults:
 
 env:
   E2E_ARTIFACTS: ${{ inputs.artifact-path }}
+  # CI never sends Maestro CLI analytics; collecting them also scans Android
+  # emulator state on every start.
+  MAESTRO_CLI_NO_ANALYTICS: "1"
+  MAESTRO_CLI_ANALYSIS_NOTIFICATION_DISABLED: "true"
 
 jobs:
   android:
@@ -303,6 +307,12 @@ jobs:
           if [ -x /usr/local/bin/docker ]; then ln -sf /usr/local/bin/docker "$shim/docker"; fi
           echo "$shim" >> "$GITHUB_PATH"
           echo "JAVA_HOME=$(/usr/libexec/java_home -v 17)" >> "$GITHUB_ENV"
+          # Maestro lists <ANDROID_USER_HOME>/avd at startup even for iOS. Point
+          # it at an empty dir so the job never reads the host's ~/.android
+          # (which may live on a volume a background runner cannot read).
+          android_user_home="$RUNNER_TEMP/android-user-home"
+          mkdir -p "$android_user_home/avd"
+          echo "ANDROID_USER_HOME=$android_user_home" >> "$GITHUB_ENV"
           export DOCKER_CONFIG="$RUNNER_TEMP/docker-config"
           mkdir -p "$DOCKER_CONFIG"
           printf '{}\n' > "$DOCKER_CONFIG/config.json"
