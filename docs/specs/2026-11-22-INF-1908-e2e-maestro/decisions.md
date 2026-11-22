@@ -83,3 +83,21 @@ Numbers are never reused, renumbered or deleted. Reverse a decision by adding a 
 - **Proposed by:** ai
 - **Chosen by:** ai
 - **Impact:** med
+
+## D10: Docker config on the Mac Studio
+- **Problem:** The first iOS run hung for 24 minutes in `supabase start`, stuck on four `docker pull`s. The Studio's `~/.docker/config.json` uses `credsStore: desktop` (the macOS keychain helper) and a Docker Scout hook on every pull; in a runner service with no GUI session these cannot complete. The pulled images are public.
+- **Options:** A: the iOS job uses an empty `DOCKER_CONFIG` and `DOCKER_HOST` pointing at Docker Desktop's socket; B: edit the user's `~/.docker/config.json`; C: pre-pull images by hand.
+- **Choice:** A.
+- **Rationale:** Scoped to the job, needs no change to the user's own Docker setup, and keeps working when images change. Verified on the Studio: the same pull completes in seconds with an empty config.
+- **Proposed by:** ai
+- **Chosen by:** ai
+- **Impact:** med
+
+## D11: Local backend ports on a shared runner
+- **Problem:** Starting Docker Desktop brought back stock-tracker's local Supabase stack, which holds the default 54321/54322 ports, so arami's stack could not start beside it. The plan had assumed no other stack would be running.
+- **Options:** A: callers move their local stack off the default ports in CI (Supabase CLI reads `SUPABASE_<PATH>` overrides); B: the workflow stops other stacks; C: require the Studio to run no other stack.
+- **Choice:** A, done in arami's `scripts/e2e/env.sh` (5532x when `CI` is set).
+- **Rationale:** Never touches another project's stack, and local runs keep the defaults. The shared workflow cannot know a caller's backend, so the fix sits with the caller.
+- **Proposed by:** ai
+- **Chosen by:** ai
+- **Impact:** low

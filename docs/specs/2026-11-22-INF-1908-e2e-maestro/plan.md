@@ -45,7 +45,8 @@ Constraints:
 - Docker Desktop is running on the Mac Studio when the iOS job starts. If it is not, `supabase start` fails and the job fails with that error (no auto-start).
 - The arami `mac-studio` runner is online and has the `mac-studio` label (checked: `mac-studio-arami`, labels `self-hosted,macOS,ARM64,mac-studio`).
 - arami's iOS build works on Xcode 26.4 with one of the Studio's runtimes. arami's docs warn that Xcode 27 builds fail on the iOS 27 simulator; an `ios-runtime` input lets arami pin `iOS-17-0` if 26.4 fails.
-- No other local Supabase stack on the Studio holds the default ports while the iOS job runs.
+- ~~No other local Supabase stack on the Studio holds the default ports while the iOS job runs.~~ False: stock-tracker's stack restarts with Docker Desktop. Callers move their CI stack to other ports (D11).
+- The Studio's Docker config (keychain credential helper, Scout hooks) does not work in a runner service; the iOS job uses an empty `DOCKER_CONFIG` (D10).
 
 ## Terms
 - **Caller**: an app repo workflow that `uses:` the shared workflow.

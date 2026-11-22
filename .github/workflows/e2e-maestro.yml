@@ -279,10 +279,22 @@ jobs:
     steps:
       # The Studio runner service's PATH has no /usr/local/bin (Docker Desktop's
       # CLI) and no Java selected; Maestro needs Java 17.
+      # Docker Desktop's own config sends pulls through the keychain credential
+      # helper and Scout hooks, which hang in a runner service with no GUI
+      # session. The images e2e needs are public, so use an empty config and
+      # talk to Docker Desktop's socket directly.
       - name: Prepare macOS host
         run: |
           echo "/usr/local/bin" >> "$GITHUB_PATH"
           echo "JAVA_HOME=$(/usr/libexec/java_home -v 17)" >> "$GITHUB_ENV"
+          export DOCKER_CONFIG="$RUNNER_TEMP/docker-config"
+          mkdir -p "$DOCKER_CONFIG"
+          printf '{}\n' > "$DOCKER_CONFIG/config.json"
+          echo "DOCKER_CONFIG=$DOCKER_CONFIG" >> "$GITHUB_ENV"
+          if [ -S "$HOME/.docker/run/docker.sock" ]; then
+            export DOCKER_HOST="unix://$HOME/.docker/run/docker.sock"
+            echo "DOCKER_HOST=$DOCKER_HOST" >> "$GITHUB_ENV"
+          fi
           if ! /usr/local/bin/docker info > /dev/null 2>&1; then
             echo "::warning::Docker is not running on this runner; a local backend in setup-command will fail."
           fi
