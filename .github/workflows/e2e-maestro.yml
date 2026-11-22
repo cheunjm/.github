@@ -107,7 +107,7 @@ env:
 
 jobs:
   android:
-    name: e2e / android
+    name: android
     if: contains(inputs.platforms, 'android')
     runs-on: ${{ inputs.android-runner }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
@@ -262,7 +262,7 @@ jobs:
           include-hidden-files: true
 
   ios:
-    name: e2e / ios
+    name: ios
     # Self-hosted: only same-repo branches and manual runs reach the Studio.
     if: >-
       contains(inputs.platforms, 'ios') &&
@@ -388,7 +388,7 @@ jobs:
           include-hidden-files: true
 
   web:
-    name: e2e / web
+    name: web
     if: contains(inputs.platforms, 'web')
     runs-on: ${{ inputs.web-runner }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
