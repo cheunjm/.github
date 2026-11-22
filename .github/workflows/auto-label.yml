@@ -1,8 +1,6 @@
 name: Labels
 
 on:
-  pull_request:
-    types: [opened]
   workflow_call:
     inputs:
       runner:
