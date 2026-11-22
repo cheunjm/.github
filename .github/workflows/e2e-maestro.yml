@@ -73,7 +73,7 @@ on:
       supabase-version:
         description: "Supabase CLI version. Pinned: `latest` makes an unauthenticated GitHub API call that hits rate limits"
         type: string
-        default: "2.78.1"
+        default: "3.2.0"
       android-runner:
         type: string
         default: "ubuntu-latest"
