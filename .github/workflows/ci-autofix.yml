@@ -675,7 +675,7 @@ jobs:
     needs: resolve-pr
     if: >
       needs.resolve-pr.outputs.has_pr == 'true' &&
-      contains(fromJSON('["changeset","Changeset"]'), github.event.workflow_run.name) &&
+      github.event.workflow_run.name == 'Changeset' &&
       github.event.workflow_run.conclusion == 'failure'
     steps:
       - name: Generate GitHub App token

@@ -1,0 +1,11 @@
+name: Labels
+
+on:
+  pull_request:
+    types: [opened]
+
+jobs:
+  labels:
+    uses: ./.github/workflows/auto-label.yml
+    permissions:
+      pull-requests: write
