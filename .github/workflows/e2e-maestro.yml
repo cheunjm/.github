@@ -399,12 +399,18 @@ jobs:
           echo "Booting $device_type on $runtime as $udid"
           xcrun simctl bootstatus "$udid" -b
 
+      # Maestro's Android client also reads ~/.android/adbkey from the JVM's
+      # user.home (ignoring ANDROID_USER_HOME) even on iOS. Give the JVM a
+      # job-local home so an iOS run never touches the host's Android state.
       - name: Run Maestro suite
         env:
           COMMAND: ${{ inputs.test-command }}
           FLOWS: ${{ inputs.flows-path }}
         run: |
           mkdir -p "$E2E_ARTIFACTS"
+          maestro_home="$RUNNER_TEMP/maestro-home"
+          mkdir -p "$maestro_home/.android"
+          export JAVA_TOOL_OPTIONS="-Duser.home=$maestro_home${JAVA_TOOL_OPTIONS:+ $JAVA_TOOL_OPTIONS}"
           if [ -n "$COMMAND" ]; then
             bash -euo pipefail -c "$COMMAND"
           else
