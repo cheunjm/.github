@@ -1,0 +1,116 @@
+name: Decisions
+
+# Sends a merged `decision-log` PR to cheunjm/engineering-log as a
+# `new-decision` repository_dispatch. The receiving side is engineering-log's
+# receive-entry.yml.
+#
+# Check name (caller job id `decisions`): decisions / dispatch.
+#
+# Every PR field reaches the shell through `env:` and the payload is built with
+# `jq --arg`, so a PR title or body never becomes part of the script text.
+#
+# The caller grants nothing (`permissions: {}`): the job only uses the GitHub App
+# token it mints from BOT_APP_ID and BOT_PRIVATE_KEY.
+#
+#   name: Decisions
+#   on:
+#     pull_request:
+#       types: [closed]
+#   permissions: {}
+#   jobs:
+#     decisions:
+#       uses: cheunjm/.github/.github/workflows/decision-dispatch.yml@main
+#       secrets: inherit
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: "Runner label for the job"
+        type: string
+        required: false
+        default: "ubuntu-latest"
+    secrets:
+      BOT_APP_ID:
+        required: true
+      BOT_PRIVATE_KEY:
+        required: true
+
+jobs:
+  dispatch:
+    runs-on: ${{ inputs.runner || 'ubuntu-latest' }}
+    if: >
+      github.event.pull_request.merged == true &&
+      contains(github.event.pull_request.labels.*.name, 'decision-log')
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+          repositories: engineering-log
+
+      - name: Build and send the dispatch
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          SOURCE_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
+          MERGED_BY: ${{ github.event.pull_request.merged_by.login }}
+          FILES_CHANGED: ${{ github.event.pull_request.changed_files }}
+          ADDITIONS: ${{ github.event.pull_request.additions }}
+          DELETIONS: ${{ github.event.pull_request.deletions }}
+          CREATED_AT: ${{ github.event.pull_request.created_at }}
+          MERGED_AT: ${{ github.event.pull_request.merged_at }}
+        run: |
+          set -euo pipefail
+
+          hours=$(python3 -c "
+          import os
+          from datetime import datetime
+          c = datetime.fromisoformat(os.environ['CREATED_AT'].replace('Z', '+00:00'))
+          m = datetime.fromisoformat(os.environ['MERGED_AT'].replace('Z', '+00:00'))
+          print(f'{(m - c).total_seconds() / 3600:.1f}')
+          ")
+
+          linear_issue=""
+          if [[ "$PR_TITLE" =~ ^\[([A-Z]+-[0-9]+)\] ]]; then
+            linear_issue="${BASH_REMATCH[1]}"
+          else
+            echo "::warning::No Linear issue ID found in the PR title"
+          fi
+
+          jq -n \
+            --arg source_repo "$SOURCE_REPO" \
+            --argjson pr_number "$PR_NUMBER" \
+            --arg pr_title "$PR_TITLE" \
+            --arg pr_body "$PR_BODY" \
+            --arg pr_url "$PR_URL" \
+            --arg branch "$PR_BRANCH" \
+            --arg merged_by "$MERGED_BY" \
+            --arg linear_issue "$linear_issue" \
+            --argjson files_changed "$FILES_CHANGED" \
+            --arg lines "+$ADDITIONS -$DELETIONS ttm=${hours}h" \
+            '{
+              event_type: "new-decision",
+              client_payload: {
+                source_repo: $source_repo,
+                pr_number: $pr_number,
+                pr_title: $pr_title,
+                pr_body: $pr_body,
+                pr_url: $pr_url,
+                branch: $branch,
+                merged_by: $merged_by,
+                linear_issue: $linear_issue,
+                files_changed: $files_changed,
+                lines: $lines
+              }
+            }' > payload.json
+
+          # gh exits non-zero on any non-2xx response, which fails the job.
+          gh api -X POST repos/cheunjm/engineering-log/dispatches --input payload.json
+          echo "Dispatched successfully"

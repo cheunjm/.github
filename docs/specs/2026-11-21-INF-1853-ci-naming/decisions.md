@@ -194,3 +194,12 @@ Numbers are never reused, renumbered or deleted. Reverse a decision by adding a 
 - **Chosen by:** human
 - **Impact:** med
 - **Supersedes:** the "stays `Validate workflow YAML` for now" note under the earlier ci.yml decision
+
+## D19: Decision-log dispatch becomes a shared workflow (INF-1878)
+- **Problem:** 14 repos each carried an inline `dispatch-decision-log.yml` (10 distinct versions) that spliced the PR title and body into a script with `${{ }}`. actionlint flags it as script injection, and fixing it meant 14 separate edits.
+- **Options:** A: one shared `decision-dispatch.yml` and a thin caller per repo; B: patch every copy in place.
+- **Choice:** A. The check stays `decisions / dispatch` (caller job id `decisions`, shared job `dispatch`).
+- **Rationale:** One fix instead of 14, and the copies cannot drift again. The shared job passes every PR field through `env:` and builds the payload with `jq --arg`.
+- **Proposed by:** ai
+- **Chosen by:** human
+- **Impact:** med
