@@ -509,13 +509,16 @@ jobs:
           echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
 
       # Maestro's web driver starts Chrome itself; on a runner it must be headless
-      # and unsandboxed.
+      # and unsandboxed. Its ChromeDriver launches /opt/google/chrome/chrome
+      # directly, so a wrapper on /usr/bin/google-chrome is never used and Chrome
+      # exits at startup ("session not created"). Wrap the real binary instead.
       - name: Wrap Chrome for headless CI
         if: runner.os == 'Linux'
         run: |
-          sudo mv /usr/bin/google-chrome /usr/bin/google-chrome.original
-          printf '#!/bin/sh\nexec /usr/bin/google-chrome.original "$@" --no-sandbox --headless=new --disable-dev-shm-usage --disable-gpu\n' | sudo tee /usr/bin/google-chrome
-          sudo chmod +x /usr/bin/google-chrome
+          chrome=/opt/google/chrome/chrome
+          sudo mv "$chrome" "$chrome.original"
+          printf '#!/bin/sh\nexec %s.original "$@" --no-sandbox --headless=new --disable-dev-shm-usage --disable-gpu\n' "$chrome" | sudo tee "$chrome"
+          sudo chmod +x "$chrome"
 
       - name: Serve app
         if: inputs.serve-command != ''
