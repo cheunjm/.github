@@ -1,0 +1,567 @@
+name: E2E (Maestro)
+
+# Reusable Maestro e2e for Android, iOS and web (docs/specs/2026-11-22-INF-1908-e2e-maestro).
+# The workflow owns the toolchain and the device: it boots an Android emulator,
+# an iOS simulator or a headless Chrome, then hands the device to the caller's
+# test command as E2E_DEVICE (emulator serial, simulator UDID or web URL) with
+# E2E_PLATFORM set to android, ios or web. The caller supplies how to set up,
+# build, serve and test its own app.
+#
+# iOS runs on the Mac Studio (`ios-runner`, default mac-studio) because it needs
+# Xcode and Docker; hosted macOS has no Docker. Fork PRs never reach it.
+#
+# A new push never cancels a running suite: the run finishes and only the newest
+# pending push waits behind it.
+
+on:
+  workflow_call:
+    inputs:
+      platforms:
+        description: "Comma-separated platforms to run: android, ios, web"
+        type: string
+        required: true
+      flows-path:
+        description: "Maestro flows directory or file, used by the default test command"
+        type: string
+        default: ".maestro"
+      artifact-path:
+        description: "Directory with reports, screenshots and logs, uploaded when a job fails"
+        type: string
+        default: ".e2e"
+      install-command:
+        description: "Dependency install command"
+        type: string
+        default: "npm ci"
+      setup-command:
+        description: "Runs after install, before the build (e.g. start a local backend). E2E_PLATFORM is set"
+        type: string
+        default: ""
+      build-command:
+        description: "Builds the app under test. E2E_PLATFORM is set"
+        type: string
+        default: ""
+      test-command:
+        description: "Installs the build and runs Maestro. E2E_PLATFORM and E2E_DEVICE are set. Empty runs `maestro test <flows-path>` with a JUnit report in <artifact-path>"
+        type: string
+        default: ""
+      teardown-command:
+        description: "Always runs at the end (e.g. stop a local backend). Matters on self-hosted runners, which keep state"
+        type: string
+        default: ""
+      serve-command:
+        description: "web only: serves the built app in the background"
+        type: string
+        default: ""
+      web-url:
+        description: "web only: URL the served app answers on; passed as E2E_DEVICE"
+        type: string
+        default: "http://localhost:8080"
+      maestro-version:
+        type: string
+        default: "2.12.1"
+      node-version:
+        type: string
+        default: "22"
+      registry-scope:
+        description: "npm scope read from GitHub Packages with PKG_READ_TOKEN (e.g. @cheunjm); empty for public registries only"
+        type: string
+        default: ""
+      supabase-cli:
+        description: "Install the Supabase CLI (needed for a local Supabase stack)"
+        type: boolean
+        default: false
+      supabase-version:
+        description: "Supabase CLI version. Pinned: `latest` makes an unauthenticated GitHub API call that hits rate limits"
+        type: string
+        default: "3.2.0"
+      android-runner:
+        type: string
+        default: "ubuntu-latest"
+      ios-runner:
+        type: string
+        default: "mac-studio"
+      web-runner:
+        type: string
+        default: "ubuntu-latest"
+      android-api-level:
+        type: number
+        default: 34
+      android-arch:
+        type: string
+        default: "x86_64"
+      android-profile:
+        type: string
+        default: "pixel_6"
+      ios-runtime:
+        description: "Simulator runtime filter, e.g. iOS-17-0. Empty picks the newest iOS runtime"
+        type: string
+        default: ""
+      timeout-minutes:
+        type: number
+        default: 60
+    secrets:
+      PKG_READ_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+
+# Explicit bash runs steps with -eo pipefail, so `build | tee log` fails when
+# the build fails (the implicit default is `bash -e` without pipefail).
+defaults:
+  run:
+    shell: bash
+
+env:
+  E2E_ARTIFACTS: ${{ inputs.artifact-path }}
+  # CI never sends Maestro CLI analytics; collecting them also scans Android
+  # emulator state on every start.
+  MAESTRO_CLI_NO_ANALYTICS: "1"
+  MAESTRO_CLI_ANALYSIS_NOTIFICATION_DISABLED: "true"
+
+jobs:
+  android:
+    name: android
+    if: contains(inputs.platforms, 'android')
+    runs-on: ${{ inputs.android-runner }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    concurrency:
+      group: e2e-maestro-android-${{ github.repository }}-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: false
+    env:
+      E2E_PLATFORM: android
+      E2E_DEVICE: emulator-5554
+    steps:
+      # The build, a local backend and the emulator outgrow the hosted runner's
+      # free disk; drop toolchains this job never uses.
+      - name: Free disk space
+        if: runner.os == 'Linux' && runner.environment == 'github-hosted'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/.ghcup /opt/ghc /usr/share/swift \
+            /usr/local/share/boost /usr/local/share/powershell /usr/local/share/chromium \
+            /opt/hostedtoolcache/CodeQL /opt/hostedtoolcache/go /opt/hostedtoolcache/PyPy \
+            /opt/microsoft /opt/google "$AGENT_TOOLSDIRECTORY/Ruby"
+          sudo docker image prune --all --force > /dev/null
+          df -h /
+
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+          registry-url: ${{ inputs.registry-scope != '' && 'https://npm.pkg.github.com' || '' }}
+          scope: ${{ inputs.registry-scope }}
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
+        with:
+          cache-read-only: false
+
+      - uses: supabase/setup-cli@1dedf2c611547ede7232d26866dd3c56ab903bbb # v1
+        if: inputs.supabase-cli
+        with:
+          version: ${{ inputs.supabase-version }}
+
+      - name: Install dependencies
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.PKG_READ_TOKEN }}
+          COMMAND: ${{ inputs.install-command }}
+        run: bash -euo pipefail -c "$COMMAND"
+
+      - name: Set up
+        if: inputs.setup-command != ''
+        env:
+          COMMAND: ${{ inputs.setup-command }}
+        run: bash -euo pipefail -c "$COMMAND"
+
+      - name: Build
+        if: inputs.build-command != ''
+        env:
+          COMMAND: ${{ inputs.build-command }}
+        run: |
+          mkdir -p "$E2E_ARTIFACTS"
+          bash -euo pipefail -c "$COMMAND" 2>&1 | tee "$E2E_ARTIFACTS/build-android.log"
+
+      - name: Install Maestro
+        env:
+          MAESTRO_VERSION: ${{ inputs.maestro-version }}
+        run: |
+          curl -fsSL "https://get.maestro.mobile.dev" | bash
+          echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
+
+      # android-emulator-runner runs each script line on its own, so the test
+      # command goes into one file.
+      - name: Write test script
+        env:
+          COMMAND: ${{ inputs.test-command }}
+          FLOWS: ${{ inputs.flows-path }}
+        run: |
+          mkdir -p "$E2E_ARTIFACTS"
+          script="$RUNNER_TEMP/e2e-test.sh"
+          if [ -n "$COMMAND" ]; then
+            printf 'set -euo pipefail\n%s\n' "$COMMAND" > "$script"
+          else
+            # shellcheck disable=SC2016 # $E2E_DEVICE must expand when the script runs
+            printf 'set -euo pipefail\nmaestro --device "$E2E_DEVICE" test "%s" --format junit --output "%s/report.xml" --debug-output "%s/maestro"\n' \
+              "$FLOWS" "$E2E_ARTIFACTS" "$E2E_ARTIFACTS" > "$script"
+          fi
+          echo "E2E_TEST_SCRIPT=$script" >> "$GITHUB_ENV"
+
+      - name: Enable KVM
+        if: runner.os == 'Linux'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Cache AVD
+        uses: actions/cache@v6
+        id: avd-cache
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-${{ inputs.android-api-level }}-${{ inputs.android-arch }}-${{ inputs.android-profile }}-4c4g
+
+      - name: Create AVD snapshot
+        if: steps.avd-cache.outputs.cache-hit != 'true'
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2
+        with:
+          api-level: ${{ inputs.android-api-level }}
+          arch: ${{ inputs.android-arch }}
+          profile: ${{ inputs.android-profile }}
+          cores: 4
+          ram-size: 4096M
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: false
+          script: echo "Generated AVD snapshot for caching."
+
+      - name: Run Maestro suite
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2
+        with:
+          api-level: ${{ inputs.android-api-level }}
+          arch: ${{ inputs.android-arch }}
+          profile: ${{ inputs.android-profile }}
+          cores: 4
+          ram-size: 4096M
+          force-avd-creation: false
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          # System apps (Search, the launcher) can ANR on a busy cold emulator, and
+          # their dialogs cover the app under test: hide error dialogs, drop Search.
+          script: |
+            adb shell settings put global hide_error_dialogs 1
+            adb shell pm disable-user --user 0 com.android.quicksearchbox || true
+            bash "$E2E_TEST_SCRIPT"
+
+      - name: Tear down
+        if: always() && inputs.teardown-command != ''
+        env:
+          COMMAND: ${{ inputs.teardown-command }}
+        run: bash -euo pipefail -c "$COMMAND"
+
+      - name: Upload artifacts
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-android
+          # Reports, screenshots and logs only: skip build outputs (APKs, app
+          # bundles, Xcode derived data) that callers may keep in the same dir.
+          path: |
+            ${{ inputs.artifact-path }}
+            !${{ inputs.artifact-path }}/**/*.apk
+            !${{ inputs.artifact-path }}/**/*.app/**
+            !${{ inputs.artifact-path }}/**/Build/**
+            !${{ inputs.artifact-path }}/**/Index.noindex/**
+            !${{ inputs.artifact-path }}/**/ModuleCache.noindex/**
+            !${{ inputs.artifact-path }}/**/SDKStatCaches.noindex/**
+          if-no-files-found: ignore
+          include-hidden-files: true
+
+  ios:
+    name: ios
+    # Self-hosted: only same-repo branches and manual runs reach the Studio.
+    if: >-
+      contains(inputs.platforms, 'ios') &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ${{ inputs.ios-runner }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    concurrency:
+      group: e2e-maestro-ios-${{ github.repository }}-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: false
+    env:
+      E2E_PLATFORM: ios
+      # Maestro's iOS driver can be slow to start on a busy machine.
+      MAESTRO_DRIVER_STARTUP_TIMEOUT: "600000"
+    steps:
+      # The Studio runner service's PATH has no /usr/local/bin (Docker Desktop's
+      # CLI) and no Java selected; Maestro needs Java 17.
+      # The runner service's PATH lacks Docker Desktop's CLI (/usr/local/bin).
+      # Expose only `docker` through a job-local dir: /usr/local/bin also holds
+      # stale tools (a 2021 CocoaPods) that would shadow Homebrew's.
+      # Docker Desktop's own config sends pulls through the keychain credential
+      # helper and Scout hooks, which hang in a runner service with no GUI
+      # session. The images e2e needs are public, so use an empty config and
+      # talk to Docker Desktop's socket directly.
+      - name: Prepare macOS host
+        run: |
+          shim="$RUNNER_TEMP/e2e-bin"
+          mkdir -p "$shim"
+          if [ -x /usr/local/bin/docker ]; then ln -sf /usr/local/bin/docker "$shim/docker"; fi
+          echo "$shim" >> "$GITHUB_PATH"
+          echo "JAVA_HOME=$(/usr/libexec/java_home -v 17)" >> "$GITHUB_ENV"
+          # Maestro lists <ANDROID_USER_HOME>/avd at startup even for iOS. Point
+          # it at an empty dir so the job never reads the host's ~/.android
+          # (which may live on a volume a background runner cannot read).
+          android_user_home="$RUNNER_TEMP/android-user-home"
+          mkdir -p "$android_user_home/avd"
+          echo "ANDROID_USER_HOME=$android_user_home" >> "$GITHUB_ENV"
+          export DOCKER_CONFIG="$RUNNER_TEMP/docker-config"
+          mkdir -p "$DOCKER_CONFIG"
+          printf '{}\n' > "$DOCKER_CONFIG/config.json"
+          echo "DOCKER_CONFIG=$DOCKER_CONFIG" >> "$GITHUB_ENV"
+          if [ -S "$HOME/.docker/run/docker.sock" ]; then
+            export DOCKER_HOST="unix://$HOME/.docker/run/docker.sock"
+            echo "DOCKER_HOST=$DOCKER_HOST" >> "$GITHUB_ENV"
+          fi
+          if ! "$shim/docker" info > /dev/null 2>&1; then
+            echo "::warning::Docker is not running on this runner; a local backend in setup-command will fail."
+          fi
+          xcodebuild -version
+
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+          registry-url: ${{ inputs.registry-scope != '' && 'https://npm.pkg.github.com' || '' }}
+          scope: ${{ inputs.registry-scope }}
+
+      - uses: supabase/setup-cli@1dedf2c611547ede7232d26866dd3c56ab903bbb # v1
+        if: inputs.supabase-cli
+        with:
+          version: ${{ inputs.supabase-version }}
+
+      - name: Install dependencies
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.PKG_READ_TOKEN }}
+          COMMAND: ${{ inputs.install-command }}
+        run: bash -euo pipefail -c "$COMMAND"
+
+      - name: Set up
+        if: inputs.setup-command != ''
+        env:
+          COMMAND: ${{ inputs.setup-command }}
+        run: bash -euo pipefail -c "$COMMAND"
+
+      - name: Build
+        if: inputs.build-command != ''
+        env:
+          COMMAND: ${{ inputs.build-command }}
+        run: |
+          mkdir -p "$E2E_ARTIFACTS"
+          bash -euo pipefail -c "$COMMAND" 2>&1 | tee "$E2E_ARTIFACTS/build-ios.log"
+
+      - name: Install Maestro
+        env:
+          MAESTRO_VERSION: ${{ inputs.maestro-version }}
+        run: |
+          curl -fsSL "https://get.maestro.mobile.dev" | bash
+          echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
+
+      # A throwaway simulator on the newest iOS runtime (or the one matching
+      # ios-runtime) and the newest plain iPhone that runtime supports. It is
+      # created from the runtime's device types, so the host needs no existing
+      # simulators, and deleted in the last step.
+      - name: Boot simulator
+        env:
+          RUNTIME_FILTER: ${{ inputs.ios-runtime }}
+        run: |
+          # shellcheck disable=SC2016 # the node program is single-quoted on purpose
+          read -r device_type runtime < <(xcrun simctl list runtimes available -j | node -e '
+            const { runtimes } = JSON.parse(require("fs").readFileSync(0));
+            const filter = process.env.RUNTIME_FILTER || ".iOS-";
+            const semver = (v) => v.split(".").map(Number);
+            const cmp = (a, b) => { const x = semver(a), y = semver(b);
+              for (let i = 0; i < Math.max(x.length, y.length); i++) { const d = (x[i] ?? 0) - (y[i] ?? 0); if (d) return d; }
+              return 0; };
+            const runtime = runtimes
+              .filter((r) => r.platform === "iOS" && r.identifier.includes(filter))
+              .sort((a, b) => cmp(a.version, b.version))
+              .at(-1);
+            if (!runtime) { console.error(`no available iOS runtime matches "${filter}"`); process.exit(1); }
+            const iphones = (runtime.supportedDeviceTypes ?? [])
+              .map((d) => ({ d, n: Number((d.name.match(/^iPhone (\d+)/) ?? [])[1]) }))
+              .filter(({ n }) => n > 0)
+              .sort((a, b) => a.n - b.n || b.d.name.length - a.d.name.length);
+            if (!iphones.length) { console.error(`runtime ${runtime.identifier} supports no iPhone`); process.exit(1); }
+            console.log(iphones.at(-1).d.identifier, runtime.identifier)')
+          udid=$(xcrun simctl create "E2E ${GITHUB_REPOSITORY#*/} ${GITHUB_RUN_ID}" "$device_type" "$runtime")
+          echo "E2E_DEVICE=$udid" >> "$GITHUB_ENV"
+          echo "Booting $device_type on $runtime as $udid"
+          xcrun simctl bootstatus "$udid" -b
+
+      # Maestro's Android client also reads ~/.android/adbkey from the JVM's
+      # user.home (ignoring ANDROID_USER_HOME) even on iOS. Give the JVM a
+      # job-local home so an iOS run never touches the host's Android state.
+      - name: Run Maestro suite
+        env:
+          COMMAND: ${{ inputs.test-command }}
+          FLOWS: ${{ inputs.flows-path }}
+        run: |
+          mkdir -p "$E2E_ARTIFACTS"
+          maestro_home="$RUNNER_TEMP/maestro-home"
+          mkdir -p "$maestro_home/.android"
+          export JAVA_TOOL_OPTIONS="-Duser.home=$maestro_home${JAVA_TOOL_OPTIONS:+ $JAVA_TOOL_OPTIONS}"
+          if [ -n "$COMMAND" ]; then
+            bash -euo pipefail -c "$COMMAND"
+          else
+            maestro --device "$E2E_DEVICE" test "$FLOWS" --format junit \
+              --output "$E2E_ARTIFACTS/report.xml" --debug-output "$E2E_ARTIFACTS/maestro"
+          fi
+
+      - name: Tear down
+        if: always() && inputs.teardown-command != ''
+        env:
+          COMMAND: ${{ inputs.teardown-command }}
+        run: bash -euo pipefail -c "$COMMAND"
+
+      - name: Delete simulator
+        if: always() && env.E2E_DEVICE != ''
+        run: |
+          xcrun simctl shutdown "$E2E_DEVICE" > /dev/null 2>&1 || true
+          xcrun simctl delete "$E2E_DEVICE"
+
+      - name: Upload artifacts
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-ios
+          path: |
+            ${{ inputs.artifact-path }}
+            !${{ inputs.artifact-path }}/**/*.apk
+            !${{ inputs.artifact-path }}/**/*.app/**
+            !${{ inputs.artifact-path }}/**/Build/**
+            !${{ inputs.artifact-path }}/**/Index.noindex/**
+            !${{ inputs.artifact-path }}/**/ModuleCache.noindex/**
+            !${{ inputs.artifact-path }}/**/SDKStatCaches.noindex/**
+          if-no-files-found: ignore
+          include-hidden-files: true
+
+  web:
+    name: web
+    if: contains(inputs.platforms, 'web')
+    runs-on: ${{ inputs.web-runner }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    concurrency:
+      group: e2e-maestro-web-${{ github.repository }}-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: false
+    env:
+      E2E_PLATFORM: web
+      E2E_DEVICE: ${{ inputs.web-url }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+          registry-url: ${{ inputs.registry-scope != '' && 'https://npm.pkg.github.com' || '' }}
+          scope: ${{ inputs.registry-scope }}
+
+      - uses: supabase/setup-cli@1dedf2c611547ede7232d26866dd3c56ab903bbb # v1
+        if: inputs.supabase-cli
+        with:
+          version: ${{ inputs.supabase-version }}
+
+      - name: Install dependencies
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.PKG_READ_TOKEN }}
+          COMMAND: ${{ inputs.install-command }}
+        run: bash -euo pipefail -c "$COMMAND"
+
+      - name: Set up
+        if: inputs.setup-command != ''
+        env:
+          COMMAND: ${{ inputs.setup-command }}
+        run: bash -euo pipefail -c "$COMMAND"
+
+      - name: Build
+        if: inputs.build-command != ''
+        env:
+          COMMAND: ${{ inputs.build-command }}
+        run: |
+          mkdir -p "$E2E_ARTIFACTS"
+          bash -euo pipefail -c "$COMMAND" 2>&1 | tee "$E2E_ARTIFACTS/build-web.log"
+
+      - name: Install Maestro
+        env:
+          MAESTRO_VERSION: ${{ inputs.maestro-version }}
+        run: |
+          curl -fsSL "https://get.maestro.mobile.dev" | bash
+          echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
+
+      # Maestro's web driver starts Chrome itself; on a runner it must be headless
+      # and unsandboxed.
+      - name: Wrap Chrome for headless CI
+        if: runner.os == 'Linux'
+        run: |
+          sudo mv /usr/bin/google-chrome /usr/bin/google-chrome.original
+          printf '#!/bin/sh\nexec /usr/bin/google-chrome.original "$@" --no-sandbox --headless=new --disable-dev-shm-usage --disable-gpu\n' | sudo tee /usr/bin/google-chrome
+          sudo chmod +x /usr/bin/google-chrome
+
+      - name: Serve app
+        if: inputs.serve-command != ''
+        env:
+          COMMAND: ${{ inputs.serve-command }}
+        run: |
+          mkdir -p "$E2E_ARTIFACTS"
+          nohup bash -c "$COMMAND" > "$E2E_ARTIFACTS/serve.log" 2>&1 &
+          for _ in $(seq 1 60); do
+            if curl -fsS -o /dev/null "$E2E_DEVICE"; then echo "Serving at $E2E_DEVICE"; exit 0; fi
+            sleep 2
+          done
+          echo "::error::Nothing answered at $E2E_DEVICE after 120s"
+          exit 1
+
+      - name: Run Maestro suite
+        env:
+          COMMAND: ${{ inputs.test-command }}
+          FLOWS: ${{ inputs.flows-path }}
+        run: |
+          mkdir -p "$E2E_ARTIFACTS"
+          if [ -n "$COMMAND" ]; then
+            bash -euo pipefail -c "$COMMAND"
+          else
+            maestro test --platform web "$FLOWS" --format junit \
+              --output "$E2E_ARTIFACTS/report.xml" --debug-output "$E2E_ARTIFACTS/maestro"
+          fi
+
+      - name: Tear down
+        if: always() && inputs.teardown-command != ''
+        env:
+          COMMAND: ${{ inputs.teardown-command }}
+        run: bash -euo pipefail -c "$COMMAND"
+
+      - name: Upload artifacts
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-web
+          path: |
+            ${{ inputs.artifact-path }}
+            !${{ inputs.artifact-path }}/**/*.apk
+            !${{ inputs.artifact-path }}/**/*.app/**
+            !${{ inputs.artifact-path }}/**/Build/**
+            !${{ inputs.artifact-path }}/**/Index.noindex/**
+            !${{ inputs.artifact-path }}/**/ModuleCache.noindex/**
+            !${{ inputs.artifact-path }}/**/SDKStatCaches.noindex/**
+          if-no-files-found: ignore
+          include-hidden-files: true
