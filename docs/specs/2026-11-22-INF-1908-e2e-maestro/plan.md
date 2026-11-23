@@ -36,7 +36,10 @@ Constraints:
 3. arami iOS: the same caller adds `ios` on the Studio. Done when: the iOS job passes on the Studio in the same dispatch run, and the simulator it created is deleted afterwards.
 4. Concurrency: a push during a running e2e queues instead of cancelling. Done when: observed on arami's Version PR, or on a dispatch run started while another runs.
 
-Status (2026-11-23): stages 2 and 3 done. arami run [45044908918](https://github.com/cheunjm/arami/actions/runs/45044908918) passed `e2e / android` and `e2e / ios`, all four flows each. Stage 4 is not observed yet. Failure-artifact exclusions (build outputs) are untested, because only a failed run uploads.
+Status (2026-11-23): all four stages done.
+- Stages 2-3: arami run [45044908918](https://github.com/cheunjm/arami/actions/runs/45044908918) passed `e2e / android` and `e2e / ios`, all four flows each. arami merged the caller on `@main` in [#57](https://github.com/cheunjm/arami/pull/57), green in run [45100773071](https://github.com/cheunjm/arami/actions/runs/45100773071).
+- Stage 4: a dispatch started while another ran queued its `android` job until the running one finished (run 45092410780 behind 45090202775); the running suite completed, not cancelled.
+- Failure artifacts: a failed iOS run uploaded `e2e-ios` at 12 MB (Maestro screenshots and hierarchy), so the build-output exclusions work.
 
 ## Verification
 - Stage 1: actionlint (the .github `ci.yml` check) plus `act`-free review. A reusable workflow cannot be run until a caller calls it, so stage 1 is proven by stage 2.
