@@ -254,7 +254,7 @@ D20–D23 came from the builder check on 2026-11-24.
   - **Main push:** runs only CI and the Version PR update.
 - **Calls made by the AI while recording this:**
   1. The button refuses to tag unless `ci / gate` passed on that SHA, the same check as `verify-release`.
-  2. `X.Y.Z` is the version the pending changesets would produce (`changeset status`), or the next patch when there are none. `N` starts at 1 and counts up per `X.Y.Z`.
+  2. `X.Y.Z` is the version the pending changesets would produce (`changeset status`), or the next patch when there are none. `N` starts at 0 and counts up per `X.Y.Z` (D27 makes it per version and channel), matching changesets and `npm version prerelease`.
   3. **Superseded by D27.** ui leaves changesets pre mode in stage 4 and uses the same button. `changeset-prerelease.yml` stays for any npm package that needs real prerelease versions.
 - **Rationale:** One click per develop deploy and no extra PRs. Production stays tied to the Version PR already merged today, and production only ships code that ran on develop. Pre mode exists for published npm prereleases, and these apps read no rc version.
 - **Proposed by:** human (rc tags), ai (button, rc check)
