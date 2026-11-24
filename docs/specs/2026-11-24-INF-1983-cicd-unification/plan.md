@@ -227,7 +227,7 @@ Each stage is one PR per repo it touches. In `.github`, a stage may be a small s
 - Delete: `.github/workflows/ci-autofix.yml`
 - Modify:
   - `CLAUDE.md`: drop the `ci-autofix.yml` table row. Drop "; `ci-autofix` keys off that name" from the `changeset-check.yml` row. In the paragraph after the table, drop "`ci-autofix.yml` defaults to `mac-studio`" and every sentence about agent-fix, `script-fix`, `changeset-fix` and the macOS venv.
-  - `.github/workflows/changeset-check.yml:7`: drop the `ci-autofix` reason from the comment. The `Changeset` name rule stays, because the required check context depends on it.
+  - `.github/workflows/changeset-check.yml:7`: drop the `ci-autofix` reason from the comment. Keep asking for workflow name `Changeset` (Title Case, per ci-check-naming), and say the required context `changeset / check` comes from the job id `changeset`.
 - Create: `.changeset/inf-1983-remove-ci-autofix.md` containing `".github": major` and `chore(ci): [INF-1983] remove the reusable ci-autofix.yml; callers must drop their ci-autofix workflow`.
 
 - [ ] **Step 1:** verify no caller remains. For each of the 12 repo dirs, run `git -C <dir> fetch -q origin` and then `git -C <dir> grep -n ci-autofix origin/main -- .github`. Every run must print nothing. If one prints, stop: that repo's Task 1 or 2 PR hasn't merged.
