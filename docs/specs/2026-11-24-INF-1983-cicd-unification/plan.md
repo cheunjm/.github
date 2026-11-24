@@ -36,8 +36,8 @@ Repos in scope (D3): arami, claude-statusline, clipsync, conventions, dotclaw, e
 - **Shared `ci`:** stack-agnostic (D5), with fixed slots lint, typecheck, test, format, audit and build. It has toolchain inputs (`node_version`, `python_version`, apt packages), a `preset` input (`node`, `python` or `shell`) that supplies default commands, per-slot command overrides, a built-in paths filter, and a `gate` job. It also carries over `ci-node`'s extras: private registry, test reports, Codecov and the Turborepo cache.
 - **Shared `cd` orchestrator (D7):**
   - **Targets:** Supabase (`db push`, `functions deploy`), web on Vercel through the CLI with prebuilt output, and EAS. They always run in the order Supabase, then web, then EAS.
-  - **Environment:** resolved from the trigger (D6, D20). A push to `main` and any prerelease tag (`vX.Y.Z-*`) deploy `develop`. A clean `vX.Y.Z` tag deploys `master`. A manual dispatch takes an explicit environment. There are exactly two environments.
-  - **Release gate:** `master` deploys keep `verify-release`: the commit is on `main` and `ci / gate` passed on that SHA (D22.2).
+  - **Environment:** resolved from the trigger (D6, D20, D26). Any prerelease tag (`vX.Y.Z-*`, normally `vX.Y.Z-rc.N` from the rc button) deploys `develop`. A clean `vX.Y.Z` tag deploys `master`. A manual dispatch takes an explicit environment. A push to `main` deploys nothing. There are exactly two environments.
+  - **Release gate:** `master` deploys keep `verify-release`: the commit is on `main` and `ci / gate` passed on that SHA (D22.2). They also check that the release commit's code matches the latest `vX.Y.Z-rc.N`, ignoring version fields, `CHANGELOG.md` and `.changeset/`. On a mismatch the deploy fails with "cut a new rc first" (D26).
   - **EAS:** chooses build or OTA by fingerprint (D8). Builds run with `eas build --local` on `mac-studio` (D9). Store submission on `master` is opt-in through a `submit` input. Platforms and a sideload APK are inputs too (D22.3).
   - **Web:** one Vercel project per environment, with project IDs and the Doppler token held in the GitHub Environments `develop` and `master` (D22.4).
   - **Storybook:** with `storybook: true`, the web target also builds the Storybook (`storybook_build_command`) and deploys it to its own Vercel project per environment, after the app's web deploy. A Storybook failure does not block EAS (D24).
@@ -46,6 +46,7 @@ Repos in scope (D3): arami, claude-statusline, clipsync, conventions, dotclaw, e
   - **Internal blocks:** the per-target reusables are internal and not part of the `@v1` contract.
 - **Native e2e:** `e2e-maestro` runs both iOS and Android on `mac-studio` (D13). The Android job is ported from Linux/KVM to macOS arm64. starlog's inline Android e2e moves onto it (D22.1). Web e2e stays on hosted runners.
 - **Tags:** the app repos' release flow gains a step that creates `vX.Y.Z` tags with the arami-bot token, because nothing creates them today (D22.8).
+- **rc button (D26):** a shared `release-candidate.yml`, plus a `workflow_dispatch` caller in arami, starlog and ui. It requires `ci / gate` green on the `main` HEAD, computes `X.Y.Z` from pending changesets (or the next patch when there are none), and pushes `vX.Y.Z-rc.N` (N from 1) with the arami-bot token.
 - **openwiki:** `openwiki-update` moves to hosted runners and calls the model provider directly (D12).
 - **`auto-resolve-conflicts`:** moves into `.github` (D2).
 - **Versioning (D4):** a floating `v1` tag that moves when the `.github` Version Packages PR merges. All callers in all repos move from `@main` to `@v1`.
@@ -78,7 +79,7 @@ Each stage is one PR per repo it touches. In `.github`, a stage may be a small s
 2. **`.github` foundation.**
    - Add the shared `ci` with presets and gate, plus the fixtures.
    - Turn `ci-node` into a wrapper over `ci`.
-   - Add the `v1` tag automation, the app-repo `vX.Y.Z` tagging step, the secrets manifest and sync script, the ruleset script, and `auto-resolve-conflicts`.
+   - Add the `v1` tag automation, the app-repo `vX.Y.Z` tagging step, the `release-candidate` workflow, the secrets manifest and sync script, the ruleset script, and `auto-resolve-conflicts`.
    - Move `openwiki-update` to hosted runners.
    - Have `.github` call its own shared `ci`.
 
@@ -98,7 +99,9 @@ Each stage is one PR per repo it touches. In `.github`, a stage may be a small s
      - **arami:** its native e2e caller uses the Studio for both platforms. The Supabase target is switched on only after a `dry_run` shows the local and remote migration history match (D23).
      - **ui:** moves to the fingerprint `runtimeVersion` and the clean-tag trigger, moves to one Vercel project per environment, and drops `stage`, Chromatic and contrast (D20, D21). It turns on `storybook: true` with new `ui-storybook-develop` and `ui-storybook-master` Vercel projects (D24).
 
-   Done when each app repo has had a develop deploy from a `main` push and a production deploy from a clean `vX.Y.Z` tag through `cd`, each posting to Slack, and ui's Storybook is live at both Storybook project URLs.
+   In each app repo, the stage-4 PR also adds the `release-candidate` caller and removes the deploy-on-push triggers. ui also leaves changesets pre mode (D26).
+
+   Done when each app repo has had a develop deploy from an rc tag cut by the button, and a production deploy from a clean `vX.Y.Z` tag through `cd`, each posting to Slack. A master deploy with code newer than the latest rc must have failed with "cut a new rc first". ui's Storybook must be live at both Storybook project URLs.
 5. **`v2`.** Remove the `ci-node` wrapper and any other deprecated inputs. Done when no caller references `ci-node`, `.github` publishes `v2.0.0`, and callers move to `@v2`.
 
 ## Verification
@@ -113,8 +116,11 @@ Each stage is one PR per repo it touches. In `.github`, a stage may be a small s
   - after merge, a test PR with a red slot cannot be merged under the ruleset.
 - **CD, per app repo:**
   - `workflow_dispatch` with `dry_run: true`;
-  - a real develop deploy from a `main` push, checking the Slack message, the Vercel URL, the EAS OTA on the develop channel, and that Supabase migrations ran first;
-  - after the next Version PR, a production deploy from the `v*` tag;
+  - a push to `main` that deploys nothing;
+  - a real develop deploy from an rc tag cut with the button, checking the Slack message, the Vercel URL, the EAS OTA on the develop channel, and that Supabase migrations ran first;
+  - the button refusing to tag while `ci / gate` is red on the `main` HEAD;
+  - after the next Version PR, a production deploy from the `vX.Y.Z` tag when its code matches the latest rc;
+  - a merge after the last rc, then the Version PR: the master deploy fails with "cut a new rc first", and passes after a new rc;
   - a native change, to confirm the fingerprint triggers a Studio build;
   - for ui, the develop and master Storybook URLs serve the current build.
 - **Secrets:** a sync script dry-run, then a real run. For each repo, `gh secret list` shows the manifest's names.
@@ -133,6 +139,7 @@ Each stage is one PR per repo it touches. In `.github`, a stage may be a small s
 - **Slot:** one fixed CI job in the shared `ci` (lint, typecheck, test, format, audit, build), switched on by its command or preset.
 - **Gate:** the `ci / gate` job. It fails if any slot fails or is cancelled, and skipped slots pass. It is the only CI check a ruleset requires.
 - **develop / master:** the two deploy environments. They are also Doppler configs, EAS profiles and channels, GitHub Environments, and one Vercel project each.
+- **rc / rc button:** a `vX.Y.Z-rc.N` tag on `main`, cut by running the app repo's `release-candidate` workflow. It is the only thing that deploys develop (D26).
 - **Fingerprint:** the Expo native fingerprint used as `runtimeVersion`. A build is needed only when no build exists for it.
 - **Studio:** the self-hosted `mac-studio` runner on Jace's Mac Studio.
 

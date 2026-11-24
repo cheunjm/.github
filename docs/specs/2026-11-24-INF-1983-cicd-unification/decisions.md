@@ -52,7 +52,7 @@ D1–D18 were settled in a grilling session on 2026-11-23/24. Recommended answer
 ## D6: Promotion model for app repos
 - **Problem:** arami and starlog deploy develop on push to `main` and production on `v*` tags; ui deploys production on `release: published`.
 - **Options:** A: push to `main` → develop, `v*` tag (created by arami-bot when the Version Packages PR merges) → production; B: production on `release: published`; C: GitHub Environment approval (not available for private repos on Free).
-- **Choice:** A. ui migrates.
+- **Choice:** A. ui migrates. **Partly superseded by D26:** a push to `main` no longer deploys develop.
 - **Rationale:** Same "Version PR is the release button" model as D4. A tag is harder to fire by accident than a UI release.
 - **Proposed by:** ai
 - **Chosen by:** human
@@ -243,3 +243,20 @@ D20–D23 came from the builder check on 2026-11-24.
 - **Proposed by:** ai
 - **Chosen by:** ai
 - **Impact:** low
+
+## D26: Develop deploys from rc tags, master only ships rc-tested code
+- **Supersedes:** D6's "push to `main` deploys develop".
+- **Problem:** Deploying develop on every push to `main` is too heavy (Jace).
+- **Options:** A: a "cut rc" button tags `main`, and master builds from the Version PR tag; B: changesets pre mode, with a Version PR per rc and a release PR for master; C: a nightly scheduled rc.
+- **Choice:** A, and master is gated on the rc.
+  - **Button:** a shared `release-candidate.yml` with a thin `workflow_dispatch` caller in each app repo (arami, starlog, ui). It tags the `main` HEAD as `vX.Y.Z-rc.N` with the arami-bot token, and that tag triggers `cd` for develop (D20 routing).
+  - **Production:** merging the Version PR still creates the clean `vX.Y.Z` tag (D22.8). `cd` builds master fresh with master config, because Doppler env is baked in per environment, so no develop artifact is reused. Before building, it checks that the release commit's code matches the latest `vX.Y.Z-rc.N`. Only `package.json` and lockfile versions, `CHANGELOG.md` and `.changeset/` may differ. Any other change fails the deploy with "cut a new rc first".
+  - **Main push:** runs only CI and the Version PR update.
+- **Calls made by the AI while recording this:**
+  1. The button refuses to tag unless `ci / gate` passed on that SHA, the same check as `verify-release`.
+  2. `X.Y.Z` is the version the pending changesets would produce (`changeset status`), or the next patch when there are none. `N` starts at 1 and counts up per `X.Y.Z`.
+  3. ui leaves changesets pre mode in stage 4 and uses the same button. `changeset-prerelease.yml` stays for any npm package that needs real prerelease versions.
+- **Rationale:** One click per develop deploy and no extra PRs. Production stays tied to the Version PR already merged today, and production only ships code that ran on develop. Pre mode exists for published npm prereleases, and these apps read no rc version.
+- **Proposed by:** human (rc tags), ai (button, rc check)
+- **Chosen by:** human
+- **Impact:** high
