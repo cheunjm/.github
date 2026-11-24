@@ -221,3 +221,12 @@ D20–D23 came from the builder check on 2026-11-24.
 - **Proposed by:** ai
 - **Chosen by:** ai
 - **Impact:** low
+
+## D24: Storybook per environment
+- **Problem:** Jace wants each app's Storybook published for both develop and master. Only ui has a Storybook today. D21 removed Chromatic as a PR check.
+- **Options:** A: `cd` deploys the Storybook to its own Vercel project per environment; B: serve it at a subpath of the app's web deploy; C: publish to Chromatic per environment.
+- **Choice:** A. The `cd` web target gains `storybook: true` and `storybook_build_command` (default `npm run storybook:build`). After the app's web deploy, it deploys the Storybook output to a separate Vercel project per environment (`<app>-storybook-develop`, `<app>-storybook-master`), with project IDs in the GitHub Environments. A Storybook failure is reported but does not block EAS. Both Storybooks may be public. D21 stands: Chromatic stays removed.
+- **Rationale:** Reuses the web target and the per-environment project model (D22.4) with no snapshot quota and no second vendor. Chromatic's advantages (private access, visual baselines) aren't needed, since Jace accepted public Storybooks and D21 dropped visual checks. arami and starlog turn it on once they have a Storybook, which is app work tracked outside this spec.
+- **Proposed by:** ai
+- **Chosen by:** human
+- **Impact:** low

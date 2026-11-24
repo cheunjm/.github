@@ -40,6 +40,7 @@ Repos in scope (D3): arami, claude-statusline, clipsync, conventions, dotclaw, e
   - **Release gate:** `master` deploys keep `verify-release`: the commit is on `main` and `ci / gate` passed on that SHA (D22.2).
   - **EAS:** chooses build or OTA by fingerprint (D8). Builds run with `eas build --local` on `mac-studio` (D9). Store submission on `master` is opt-in through a `submit` input. Platforms and a sideload APK are inputs too (D22.3).
   - **Web:** one Vercel project per environment, with project IDs and the Doppler token held in the GitHub Environments `develop` and `master` (D22.4).
+  - **Storybook:** with `storybook: true`, the web target also builds the Storybook (`storybook_build_command`) and deploys it to its own Vercel project per environment, after the app's web deploy. A Storybook failure does not block EAS (D24).
   - **Other inputs:** Doppler app env sync and a `dry_run` input (D15).
   - **Slack:** a message for every run, success or failure, to the repo's notify-merge channel (D16).
   - **Internal blocks:** the per-target reusables are internal and not part of the `@v1` contract.
@@ -65,6 +66,8 @@ Repos in scope (D3): arami, claude-statusline, clipsync, conventions, dotclaw, e
 - Caller generation or sync tooling. Callers are hand-written and thin (D1).
 - EAS cloud builds or a cloud/local switch (D9).
 - Changing app runtime env management. Doppler stays as it is.
+- Adding Storybook to arami ([INF-1987](https://linear.app/jaemincheun/issue/INF-1987)) and starlog ([INF-1988](https://linear.app/jaemincheun/issue/INF-1988)). That is app work; each turns on `storybook: true` once it lands (D24).
+- Chromatic or any visual regression check (D21, D24).
 - Any repo that no longer exists on GitHub (`stock-tracker`, `crosscheck`).
 
 ## Stage goals
@@ -93,9 +96,9 @@ Each stage is one PR per repo it touches. In `.github`, a stage may be a small s
    - **starlog, then arami, then ui:** in each, replace the EAS, web and Supabase workflows with one `cd.yml` caller, register a `mac-studio` runner if missing, and sync secrets. Then, per repo:
      - **starlog:** its inline Android e2e moves to `e2e-maestro`.
      - **arami:** its native e2e caller uses the Studio for both platforms. The Supabase target is switched on only after a `dry_run` shows the local and remote migration history match (D23).
-     - **ui:** moves to the fingerprint `runtimeVersion` and the clean-tag trigger, moves to one Vercel project per environment, and drops `stage`, Chromatic and contrast (D20, D21).
+     - **ui:** moves to the fingerprint `runtimeVersion` and the clean-tag trigger, moves to one Vercel project per environment, and drops `stage`, Chromatic and contrast (D20, D21). It turns on `storybook: true` with new `ui-storybook-develop` and `ui-storybook-master` Vercel projects (D24).
 
-   Done when each app repo has had a develop deploy from a `main` push and a production deploy from a clean `vX.Y.Z` tag through `cd`, each posting to Slack.
+   Done when each app repo has had a develop deploy from a `main` push and a production deploy from a clean `vX.Y.Z` tag through `cd`, each posting to Slack, and ui's Storybook is live at both Storybook project URLs.
 5. **`v2`.** Remove the `ci-node` wrapper and any other deprecated inputs. Done when no caller references `ci-node`, `.github` publishes `v2.0.0`, and callers move to `@v2`.
 
 ## Verification
@@ -112,7 +115,8 @@ Each stage is one PR per repo it touches. In `.github`, a stage may be a small s
   - `workflow_dispatch` with `dry_run: true`;
   - a real develop deploy from a `main` push, checking the Slack message, the Vercel URL, the EAS OTA on the develop channel, and that Supabase migrations ran first;
   - after the next Version PR, a production deploy from the `v*` tag;
-  - a native change, to confirm the fingerprint triggers a Studio build.
+  - a native change, to confirm the fingerprint triggers a Studio build;
+  - for ui, the develop and master Storybook URLs serve the current build.
 - **Secrets:** a sync script dry-run, then a real run. For each repo, `gh secret list` shows the manifest's names.
 
 ## Assumptions
