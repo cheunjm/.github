@@ -4,8 +4,8 @@ name: Changeset
 # needs its own `.changeset/*.md`; docs/CI-only PRs add an empty one
 # (`npx changeset add --empty`). The Version Packages PR is exempt.
 #
-# Callers must name their workflow `Changeset` (ci-autofix keys off that
-# name). Use a job id of `changeset`:
+# Callers name their workflow `Changeset` and use a job id of `changeset`,
+# so the required check is `changeset / check`:
 #
 #   name: Changeset
 #   on:
