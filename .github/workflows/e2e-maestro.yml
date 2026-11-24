@@ -191,6 +191,11 @@ jobs:
         env:
           MAESTRO_VERSION: ${{ inputs.maestro-version }}
         run: |
+          # The installer appends a PATH line to ${ZDOTDIR:-$HOME}/.zshrc whenever
+          # maestro is not on PATH. On a self-hosted runner that is the real
+          # ~/.zshrc, so point ZDOTDIR at the job's temp dir and put the install
+          # dir on PATH first.
+          export ZDOTDIR="$RUNNER_TEMP" PATH="$HOME/.maestro/bin:$PATH"
           curl -fsSL "https://get.maestro.mobile.dev" | bash
           echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
 
@@ -373,6 +378,11 @@ jobs:
         env:
           MAESTRO_VERSION: ${{ inputs.maestro-version }}
         run: |
+          # The installer appends a PATH line to ${ZDOTDIR:-$HOME}/.zshrc whenever
+          # maestro is not on PATH. On a self-hosted runner that is the real
+          # ~/.zshrc, so point ZDOTDIR at the job's temp dir and put the install
+          # dir on PATH first.
+          export ZDOTDIR="$RUNNER_TEMP" PATH="$HOME/.maestro/bin:$PATH"
           curl -fsSL "https://get.maestro.mobile.dev" | bash
           echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
 
@@ -505,6 +515,11 @@ jobs:
         env:
           MAESTRO_VERSION: ${{ inputs.maestro-version }}
         run: |
+          # The installer appends a PATH line to ${ZDOTDIR:-$HOME}/.zshrc whenever
+          # maestro is not on PATH. On a self-hosted runner that is the real
+          # ~/.zshrc, so point ZDOTDIR at the job's temp dir and put the install
+          # dir on PATH first.
+          export ZDOTDIR="$RUNNER_TEMP" PATH="$HOME/.maestro/bin:$PATH"
           curl -fsSL "https://get.maestro.mobile.dev" | bash
           echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
 
