@@ -230,3 +230,16 @@ D20–D23 came from the builder check on 2026-11-24.
 - **Proposed by:** ai
 - **Chosen by:** human
 - **Impact:** low
+
+## D25: Stage 1 details settled by the AI
+- **Problem:** Writing the stage 1 tasks found gaps the spec did not cover.
+- **Options:** n/a.
+- **Choice:**
+  1. The Studio also runs launchd services for `cheunjm/crosscheck` and `cheunjm/stock-tracker`, whose repos are deleted (D3). Stage 1 removes them with the engineering-log openwiki runner, and unsets engineering-log's `OPENWIKI_RUNNER`. Runner dirs are moved to a backup folder, not deleted.
+  2. arami's other `CI_RUNNER` uses (`deploy-web`, `eas-update`, the PR plumbing callers) become `ubuntu-latest` in the same PR, and `deploy-web` and `eas-update` are dispatched to develop to prove they don't need the Studio.
+  3. Docs that describe `ci-autofix` (conventions `ci-tooling.md`, `ci-check-naming.md`, `project-structure.md`, `versioning.md`, the `new-repo-bootstrap` skill and `.github`'s `CLAUDE.md`) are cleaned in stage 1, in the same PRs as the removal.
+  4. The `.github` removal is a `major` changeset, following the INF-1924 `agent-review` precedent.
+- **Rationale:** Each follows from D3, D10 or D11, and leaving them would leave dead services or docs pointing at a deleted workflow.
+- **Proposed by:** ai
+- **Chosen by:** ai
+- **Impact:** low

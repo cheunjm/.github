@@ -141,3 +141,129 @@ Each stage is one PR per repo it touches. In `.github`, a stage may be a small s
 - Move one-off workflows if a second repo ever needs them.
 - Revisit D9 (local-only EAS builds) if the Studio becomes a release bottleneck.
 - Shared Dependabot or Renovate config for action version bumps.
+
+---
+
+# Stage 1 implementation: cleanup
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task by task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** remove `ci-autofix` everywhere, take arami off `CI_RUNNER`, and remove orphaned Studio runners, so stage 2 starts from a clean baseline.
+
+**Architecture:** one PR per repo touched. Callers are removed before the shared workflow, so no caller ever points at a deleted file. arami's EAS build job is pinned to the Studio before `CI_RUNNER` is unset. Runner cleanup is operational, with no PR.
+
+**Tech stack:** GitHub Actions YAML, `gh` CLI, `actionlint`, launchd on the Studio (`ssh jaemincheun@100.86.100.15`).
+
+## Global constraints
+
+- **Branch:** `chore/INF-1983-<slug>` in a worktree created from `origin/main`. Never edit or push on `main`.
+- **Commits:** `chore(ci): [INF-1983] <imperative>` (`docs(...)` for docs-only), ending with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+- **Changeset:** every PR adds `.changeset/inf-1983-<slug>.md`. Use an empty one (`---` / `---`) everywhere except `.github`, which uses `".github": major` (precedent: INF-1924's `agent-review` removal).
+- **PRs:** draft first, then `gh pr ready` after verification. Body ends with `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
+- **Order:** Tasks 1–3 may run in parallel. Task 4 waits for Tasks 1 and 2 to merge. Task 5's variable delete waits for its own PR to merge.
+
+## Review focus
+
+1. **A caller left behind:** when `ci-autofix.yml` is deleted from `.github`, any remaining caller fails on every CI run. Task 4 step 1 greps all 12 repos first.
+2. **arami EAS build leaving the Studio:** if `CI_RUNNER` is unset before the hardcode PR merges, the next native build runs `eas build --local` on Linux and fails. Task 5 orders merge, then unset.
+3. **arami jobs that silently needed the Studio:** `deploy-web` and `eas-update` move from the Studio to `ubuntu-latest`. Task 5 dispatches both against `develop` to prove they still pass.
+4. **Docs that still describe `ci-autofix`:** conventions, the bootstrap skill and `.github`'s `CLAUDE.md` would then tell agents to add a workflow that no longer exists. Tasks 2–4 grep for zero hits.
+5. **Removing a runner that is still used:** `mac-studio-starlog-openwiki` is still live (starlog's `OPENWIKI_RUNNER`) until stage 2 and must not be touched. Task 6 lists the exact runners to remove.
+
+---
+
+### Task 1: Remove the `ci-autofix` caller from claude-statusline, dotclaw, mem0 and ui
+
+**Files**, per repo, at `/Users/jaemincheun/Documents/aramiworks/<dir>`, where dir is `claude-statusline`, `dotclaw`, `mem0-repo` (remote `cheunjm/mem0`) or `ui`:
+- Delete: `.github/workflows/ci-autofix.yml`
+- Create: `.changeset/inf-1983-remove-ci-autofix.md` (empty)
+
+**Interfaces:** produces "no caller in this repo", which Task 4 relies on.
+
+- [ ] **Step 1:** create a worktree per repo on `chore/INF-1983-remove-ci-autofix` from `origin/main`.
+- [ ] **Step 2:** delete the caller and add the empty changeset.
+- [ ] **Step 3:** verify `git grep -n "ci-autofix" -- .github` prints nothing. Leftover `.changeset/*` text in dotclaw and `CHANGELOG.md` mentions are history, so leave them.
+- [ ] **Step 4:** commit `chore(ci): [INF-1983] remove the ci-autofix caller`, push, and open a draft PR.
+- [ ] **Step 5:** verify the PR's checks are green except for checks already red on `main`. Then `gh pr ready`.
+
+### Task 2: conventions, remove the caller and the `ci-autofix` docs
+
+**Files** (`/Users/jaemincheun/Documents/aramiworks/conventions`):
+- Delete: `.github/workflows/ci-autofix.yml`
+- Modify:
+  - `architecture/ci-check-naming.md`: drop the `autofix / <step>` row (line 30) and the "`ci-autofix` keys off workflow names" bullet (line 50).
+  - `architecture/ci-tooling.md`: drop the `autofix:` job from the example caller (around 173–181) and the whole `## ci-autofix System` section (225 up to the next `##`). Reword lines 294, 366, 384 and 389 so they no longer name `ci-autofix`, and delete any sentence that only existed for it.
+  - `project-structure.md:143`: drop the `ci-autofix.yml` runner note.
+  - `versioning.md:77`: drop the `changeset-fix` sentence.
+- Create: `.changeset/inf-1983-remove-ci-autofix.md` (empty)
+
+- [ ] **Step 1:** worktree on `chore/INF-1983-remove-ci-autofix`.
+- [ ] **Step 2:** make the edits above.
+- [ ] **Step 3:** verify `git grep -n -i "ci-autofix\|autofix /\|changeset-fix\|agent-fix" -- . ':!CHANGELOG.md' ':!.changeset'` prints nothing. Read each edited section once more so the text still flows.
+- [ ] **Step 4:** commit `docs(ci): [INF-1983] remove ci-autofix and its docs`, then push, open a draft PR, and move it to ready once checks are green.
+
+### Task 3: dotfiles, update the `new-repo-bootstrap` skill
+
+**Files** (`~/dotfiles`):
+- Modify: `agents/skills/new-repo-bootstrap/SKILL.md`. Line 89 changes to name `agent-review.yml` only; `agent-review` is gone too (INF-1924), so drop the bullet if nothing else needs it. Line 97 loses the "(ci-autofix keys off that name)" parenthetical. Keep line 54: `CI_RUNNER` still drives `changeset-*.yml` until stage 2.
+- Create: `.changeset/inf-1983-bootstrap-no-autofix.md` (empty)
+
+- [ ] **Step 1:** worktree, then make the edits.
+- [ ] **Step 2:** verify `git grep -n -i "ci-autofix\|agent-review" -- agents` prints nothing.
+- [ ] **Step 3:** commit `docs(skills): [INF-1983] drop ci-autofix from new-repo-bootstrap`, push, open a PR and mark it ready. After merge, watch the `Sync` workflow with `gh run watch`.
+
+### Task 4: `.github`, delete `ci-autofix.yml`
+
+**Depends on:** Tasks 1 and 2 merged.
+
+**Files** (stack layer `chore/INF-1983-remove-ci-autofix` on top of the spec branch, PR #120):
+- Delete: `.github/workflows/ci-autofix.yml`
+- Modify:
+  - `CLAUDE.md`: drop the `ci-autofix.yml` table row. Drop "; `ci-autofix` keys off that name" from the `changeset-check.yml` row. In the paragraph after the table, drop "`ci-autofix.yml` defaults to `mac-studio`" and every sentence about agent-fix, `script-fix`, `changeset-fix` and the macOS venv.
+  - `.github/workflows/changeset-check.yml:7`: drop the `ci-autofix` reason from the comment. The `Changeset` name rule stays, because the required check context depends on it.
+- Create: `.changeset/inf-1983-remove-ci-autofix.md` containing `".github": major` and `chore(ci): [INF-1983] remove the reusable ci-autofix.yml; callers must drop their ci-autofix workflow`.
+
+- [ ] **Step 1:** verify no caller remains. For each of the 12 repo dirs, run `git -C <dir> fetch -q origin` and then `git -C <dir> grep -n ci-autofix origin/main -- .github`. Every run must print nothing. If one prints, stop: that repo's Task 1 or 2 PR hasn't merged.
+- [ ] **Step 2:** make the edits above.
+- [ ] **Step 3:** verify `actionlint` passes and `git grep -n -i "ci-autofix\|agent-fix\|script-fix\|changeset-fix" -- . ':!docs/specs' ':!CHANGELOG.md' ':!.changeset'` prints nothing.
+- [ ] **Step 4:** commit, then `gh stack submit --auto`. After `ci / actionlint` and `changeset / check` pass, mark the PR ready.
+
+### Task 5: arami, pin the EAS build to the Studio and unset `CI_RUNNER`
+
+**Files** (`/Users/jaemincheun/Documents/aramiworks/arami`):
+- Modify `.github/workflows/eas-build.yml`:
+  - the `gate` job's `runs-on` becomes `ubuntu-latest`;
+  - the `build` job's `runs-on` becomes `[self-hosted, mac-studio]`;
+  - the comment on line 10 changes "(CI_RUNNER=mac-studio)" to "(`mac-studio`)".
+- Modify every other `${{ vars.CI_RUNNER || 'ubuntu-latest' }}` in `.github/workflows/` to `ubuntu-latest`: `auto-label.yml`, `auto-update-branches.yml`, `deploy-web.yml` (two jobs), `dispatch-decision-log.yml`, `eas-update.yml` (two jobs) and `notify-merge.yml`.
+- Create: `.changeset/inf-1983-drop-ci-runner.md` (empty)
+
+- [ ] **Step 1:** worktree on `chore/INF-1983-drop-ci-runner`, then make the edits.
+- [ ] **Step 2:** verify `git grep -n CI_RUNNER -- .github` prints nothing and `actionlint` passes.
+- [ ] **Step 3:** commit `chore(ci): [INF-1983] pin EAS builds to mac-studio and drop CI_RUNNER`, push, open a draft PR and mark it ready once checks pass.
+- [ ] **Step 4 (after merge):** run `gh variable delete CI_RUNNER --repo cheunjm/arami`. `gh variable list --repo cheunjm/arami` must not show it.
+- [ ] **Step 5:** run `gh workflow run deploy-web.yml --repo cheunjm/arami -f environment=develop` and `gh workflow run eas-update.yml --repo cheunjm/arami -f channel=develop`. Add any other required inputs the workflow declares. Both must finish green on `ubuntu-latest`. Check this with `gh run view <id> --json jobs`, whose `labels` must show `ubuntu-latest`. If either fails because it needed the Studio, pin that job to `[self-hosted, mac-studio]` in a follow-up commit and record the reason in `decisions.md`.
+- [ ] **Step 6:** the next arami PR's `ci / gate` runs on `ubuntu-latest`. This is the stage done criterion.
+
+### Task 6: remove orphaned Studio runners
+
+Runners to remove (and nothing else):
+
+| Runner dir on Studio | GitHub runner | Why |
+|---|---|---|
+| `~/actions-runner-engineering-log-openwiki` | `cheunjm/engineering-log` id 22 | engineering-log calls no openwiki workflow (D12) |
+| `~/actions-runner-crosscheck` | repo deleted | D3 |
+| `~/actions-runner-stock-tracker` | repo deleted | D3 |
+
+**Do not touch** `mac-studio-starlog-openwiki`; stage 2 removes it.
+
+- [ ] **Step 1:** for each dir, on the Studio: `cd <dir>` and run `./svc.sh stop`, then `./svc.sh uninstall`. Verify with `ls ~/Library/LaunchAgents | grep -E "openwiki|crosscheck|stock-tracker"`: it shows only the starlog-openwiki plist.
+- [ ] **Step 2:** `gh api -X DELETE repos/cheunjm/engineering-log/actions/runners/22`. `gh api repos/cheunjm/engineering-log/actions/runners --jq '.runners[].name'` then shows only `mac-studio-engineering-log`.
+- [ ] **Step 3:** `gh variable delete OPENWIKI_RUNNER --repo cheunjm/engineering-log`.
+- [ ] **Step 4:** move the three dirs to `~/backups/runners-removed-2026-11/` rather than deleting them. Delete that folder after stage 2.
+
+### Stage 1 done
+
+- No repo's `origin/main` references `ci-autofix` (Task 4 step 1 grep plus the `.github` grep).
+- arami has no `CI_RUNNER` variable or reference, and its `ci / gate` and `eas / build-gate` run on `ubuntu-latest`. Its `eas / build` is pinned to `mac-studio`.
+- The Studio runs no service for engineering-log openwiki, crosscheck or stock-tracker.
