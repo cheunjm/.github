@@ -255,8 +255,26 @@ D20–D23 came from the builder check on 2026-11-24.
 - **Calls made by the AI while recording this:**
   1. The button refuses to tag unless `ci / gate` passed on that SHA, the same check as `verify-release`.
   2. `X.Y.Z` is the version the pending changesets would produce (`changeset status`), or the next patch when there are none. `N` starts at 1 and counts up per `X.Y.Z`.
-  3. ui leaves changesets pre mode in stage 4 and uses the same button. `changeset-prerelease.yml` stays for any npm package that needs real prerelease versions.
+  3. **Superseded by D27.** ui leaves changesets pre mode in stage 4 and uses the same button. `changeset-prerelease.yml` stays for any npm package that needs real prerelease versions.
 - **Rationale:** One click per develop deploy and no extra PRs. Production stays tied to the Version PR already merged today, and production only ships code that ran on develop. Pre mode exists for published npm prereleases, and these apps read no rc version.
 - **Proposed by:** human (rc tags), ai (button, rc check)
 - **Chosen by:** human
 - **Impact:** high
+
+## D27: One release flow for every repo, with `next` and `rc` channels
+- **Supersedes:** D26 point 3; extends D26's button.
+- **Problem:** ui is the published npm package `@cheunjm/ui` and uses changesets pre mode (`next`). Apps pin exact prereleases from it. D26 point 3 would have taken ui off pre mode without a way to publish prereleases. Jace wants every repo on the same flow.
+- **Options:** A: ui keeps pre mode as an exception; B: every repo uses pre mode; C: every repo uses the button, and package repos also publish what it cuts.
+- **Choice:** C, with two channels.
+  - **Button:** `release-candidate` takes `channel: next | rc` (default `rc`). It tags `vX.Y.Z-<channel>.N` (N counts per version and channel) and deploys develop. In a repo that publishes a package, it also publishes `X.Y.Z-<channel>.N` under the npm dist-tag of the same name. The version is set in CI only and never committed.
+  - **Master gate:** the latest prerelease tag for `X.Y.Z` must be an `rc`, and its code must match the release commit (D26). A `next` can never ship.
+  - **Stable:** merging the Version PR tags `vX.Y.Z`, publishes to `latest` in package repos, and deploys master.
+  - **No pre mode anywhere.** `changeset-prerelease.yml` is removed in stage 5.
+- **Calls made by the AI while recording this:**
+  1. The button refuses to run while a repo still has `.changeset/pre.json`, so its tags never collide with changesets' own prerelease tags.
+  2. ui leaves pre mode in its stage 4 PR, once the button exists, so it is never left without a way to publish prereleases. Until then ui keeps publishing `1.0.0-next.N` through pre mode. After it exits, ui's Version PR reads `1.0.0` and stays unmerged until ui's INF-1982 plan says ship. It must stay manual, with no auto-merge.
+  3. ui's INF-1982 plan, which leaves pre mode through `release-stable` at its own stage 4, is updated in that same ui PR.
+- **Rationale:** This matches common practice: SemVer, a release PR for stable, and per-release prerelease channels like React's (`canary`, `rc`) or TypeScript's (`beta`, `rc`). There is no phase state in the repo and no enter or exit PRs. `rc` versus `next` lets a develop build be marked as not shippable.
+- **Proposed by:** human (same flow everywhere, keep next and rc), ai (channel input, rc-only master gate)
+- **Chosen by:** human
+- **Impact:** med
