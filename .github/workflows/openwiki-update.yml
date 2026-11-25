@@ -18,9 +18,11 @@ name: Wiki
 # Two jobs, so the agent never shares a job with a write token: `generate` runs the agent
 # with a read-only token and uploads openwiki/ as an artifact; `publish` validates and copies
 # in only allowlisted regular files, then guards, scans, opens the PR and merges.
-# Both run on `runner` (the Mac Studio) unless the caller repo sets the variable
-# OPENWIKI_RUNNER (a dedicated runner, so a long generation never queues behind or blocks the
-# repo's CI) or `publish_runner` overrides the publish job. Tradeoff: a
+# Both run on `runner`, default `mac-studio-openwiki` (INF-1983, D28): every repo has a Studio
+# runner with that label that does no mobile work, so a long generation never queues behind or
+# blocks an EAS build or native e2e. The model is the Studio's LiteLLM (:4001, the ChatGPT
+# subscription), so callers pass nothing. The repo variable OPENWIKI_RUNNER still overrides the
+# runner until v2, and `publish_runner` overrides the publish job. Tradeoff: a
 # self-hosted runner is persistent, so `publish` wipes its workspace (planted .git hooks or
 # config) before a fresh checkout, but it cannot stop a process the agent left running on the
 # same machine. Set publish_runner: ubuntu-latest for full isolation.
@@ -34,29 +36,30 @@ on:
   workflow_call:
     inputs:
       runner:
-        description: "Runner label (e.g., mac-studio for the self-hosted runner)"
+        description: "Runner label. Default mac-studio-openwiki: a Studio runner that does no mobile work (D28)"
         required: false
         type: string
-        default: "ubuntu-latest"
+        default: "mac-studio-openwiki"
       publish_runner:
         description: "Runner for the publish job (default: same as runner)"
         required: false
         type: string
         default: ""
       base_url:
-        description: "OpenAI-compatible base URL (LiteLLM)"
+        description: "OpenAI-compatible base URL (the Studio's openwiki LiteLLM instance)"
         required: false
         type: string
-        default: "http://127.0.0.1:4000/v1"
+        default: "http://127.0.0.1:4001/v1"
       model_id:
         description: "Model alias exposed by the endpoint"
-        required: true
+        required: false
         type: string
+        default: "gpt-6.1-sol"
       use_responses_api:
         description: "Use the Responses API (for endpoints that serve models in Responses mode)"
         required: false
         type: boolean
-        default: false
+        default: true
       init:
         description: "Generate the initial wiki (opens a PR for review, never merges)"
         required: false
