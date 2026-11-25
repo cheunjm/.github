@@ -335,3 +335,12 @@ D20–D23 came from the builder check on 2026-11-24.
 - **Chosen by:** ai
 - **Impact:** low
 
+## D32: The arami-bot App has the Workflows permission
+- **Problem:** Creating `v1` failed. GitHub refuses any tag a GitHub App creates or moves, through git or the refs API, when the tagged commit contains workflow files, unless the App has the Workflows permission. Every `.github` release commit, and an app repo's rc after any workflow change, hits this.
+- **Options:** A: grant the App Workflows (read and write); B: create such tags with a personal token.
+- **Choice:** A. Jace granted it on 2026-11-25. `major-tag.yml` then created `v1` at `v1.0.0` (`3b6145c`).
+- **Rationale:** The release button and the major tag must work in every repo without a personal token. Tradeoff: the App, whose key is in every repo (D14), can also edit workflow files.
+- **Proposed by:** ai
+- **Chosen by:** human
+- **Impact:** med
+
