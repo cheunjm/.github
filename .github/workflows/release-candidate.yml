@@ -53,7 +53,7 @@ on:
         required: false
         default: false
       install_command:
-        description: "Install step before publishing (only with publish: true)"
+        description: "Install and build before publishing (only with publish: true); runs without the registry token, and npm publish uses --ignore-scripts"
         type: string
         required: false
         default: "npm ci"
@@ -104,7 +104,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0
+          persist-credentials: false
 
       - uses: actions/setup-node@v7
         with:
@@ -119,7 +119,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           SHA: ${{ github.sha }}
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
+          # Only commits on the default branch can be released.
+          if [ "$REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "::warning::$REF is not the default branch; a real run would stop here"
+            else
+              echo "::error::run this from $DEFAULT_BRANCH (got $REF)"
+              exit 1
+            fi
+          fi
           case "$CHANNEL" in
             rc|next) ;;
             *) echo "::error::channel must be rc or next, got '$CHANNEL'"; exit 1 ;;
@@ -128,8 +139,11 @@ jobs:
             echo "::error::repo is in changesets pre mode (.changeset/pre.json); leave pre mode before using the release button"
             exit 1
           fi
-          gate=$(gh api "repos/$REPO/commits/$SHA/check-runs?check_name=ci%20%2F%20gate" \
-            --jq '[.check_runs[] | .conclusion] | if index("success") then "success" else (.[0] // "missing") end')
+          # The latest `ci / gate` run from GitHub Actions on this commit must
+          # have succeeded; an older green run does not count.
+          gate=$(gh api "repos/$REPO/commits/$SHA/check-runs?check_name=ci%20%2F%20gate&filter=latest" \
+            --jq '[.check_runs[] | select(.app.slug == "github-actions")] | sort_by(.started_at) | last | (.conclusion // .status // "missing")')
+          gate="${gate:-missing}"
           if [ "$gate" != "success" ]; then
             if [ "$DRY_RUN" = "true" ]; then
               echo "::warning::ci / gate is not green on $SHA ($gate); a real run would stop here"
@@ -143,6 +157,8 @@ jobs:
         id: resolve
         env:
           CHANNEL: ${{ inputs.channel }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
         run: |
           # X.Y.Z: the highest bump any pending changeset gives this package,
           # applied to package.json's version (what `changeset version` would
@@ -167,8 +183,8 @@ jobs:
             console.log(bump === 3 ? `${M + 1}.0.0` : bump === 2 ? `${M}.${m2 + 1}.0` : `${M}.${m2}.${p + 1}`);
           ')
           base="${base%%-*}"
-          highest=$(git ls-remote --tags origin "refs/tags/v$base-$CHANNEL.*" \
-            | sed -E 's#.*refs/tags/v[^-]+-[a-z]+\.([0-9]+)(\^\{\})?$#\1#' | sort -n | tail -1)
+          highest=$(gh api "repos/$REPO/git/matching-refs/tags/v$base-$CHANNEL." --jq '.[].ref' \
+            | sed -E 's#^refs/tags/v[^-]+-[a-z]+\.([0-9]+)$#\1#' | grep -E '^[0-9]+$' | sort -n | tail -1)
           n=$(( ${highest:--1} + 1 ))
           version="$base-$CHANNEL.$n"
           echo "version=$version" >> "$GITHUB_OUTPUT"
@@ -197,14 +213,21 @@ jobs:
           gh api -X POST "repos/$REPO/git/refs" -f ref="refs/tags/$TAG" -f sha="$SHA" >/dev/null
           gh release create "$TAG" --repo "$REPO" --prerelease --generate-notes --verify-tag
 
-      - name: Publish the prerelease
+      - name: Install and build for publishing
+        # No registry token here: install and lifecycle scripts never see it.
         if: ${{ !inputs.dry_run && inputs.publish }}
         env:
           INSTALL: ${{ inputs.install_command }}
           VERSION: ${{ steps.resolve.outputs.version }}
-          CHANNEL: ${{ inputs.channel }}
-          NODE_AUTH_TOKEN: ${{ github.token }}
         run: |
           if [ -n "$INSTALL" ]; then bash -euo pipefail -c "$INSTALL"; fi
           npm version "$VERSION" --no-git-tag-version --allow-same-version
-          npm publish --tag "$CHANNEL"
+
+      - name: Publish the prerelease
+        # The token is scoped to this step, and --ignore-scripts keeps package
+        # lifecycle scripts from running with it. Build in install_command.
+        if: ${{ !inputs.dry_run && inputs.publish }}
+        env:
+          CHANNEL: ${{ inputs.channel }}
+          NODE_AUTH_TOKEN: ${{ github.token }}
+        run: npm publish --tag "$CHANNEL" --ignore-scripts
