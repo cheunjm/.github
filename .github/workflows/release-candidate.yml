@@ -147,6 +147,7 @@ jobs:
           # X.Y.Z: the highest bump any pending changeset gives this package,
           # applied to package.json's version (what `changeset version` would
           # produce for a single package); the next patch when none is pending.
+          # shellcheck disable=SC2016 # JavaScript in single quotes, not shell
           base=$(node -e '
             const fs = require("fs");
             const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
