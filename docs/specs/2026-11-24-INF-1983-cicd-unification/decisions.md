@@ -358,3 +358,16 @@ D20–D23 came from the builder check on 2026-11-24.
 - **Chosen by:** human
 - **Impact:** med
 
+## D34: Shared CI runs its slots in one job by default
+- **Problem:** Every job bills at least one minute. starlog's 7-job CI ran 244 times in November 2026, about 1,700 billed minutes (~$10). The shared `ci.yml` would bill up to 8 jobs per run (`plan`, six slots, `gate`).
+- **Options:** A: a `layout` input, default `single` (one job runs the slots one after another), with `matrix` as an opt-in; B: CI on the Studio (reverses D10, and CI would queue behind EAS builds and e2e); C: keep the matrix.
+- **Choice:** A. `ci.yml` gains `layout: single | matrix`, default `single`.
+  - In `single`, one job named `checks` (`ci / checks`) runs the resolved slots in order, each in its own log group, with a pass/fail line per slot in the job summary.
+  - It runs every slot even after one fails, so one run reports every failure, and the job fails if any slot failed.
+  - `gate` is unchanged, so `ci / gate` stays the only required check.
+  - `matrix` keeps one check per slot (`ci / lint` and so on).
+- **Rationale:** About 2 billed minutes per run instead of up to 8, with no new Studio dependency. Rulesets only require `ci / gate`.
+- **Proposed by:** ai
+- **Chosen by:** human
+- **Impact:** med
+

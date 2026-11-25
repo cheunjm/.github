@@ -514,7 +514,7 @@ And:
   - `use_app` defaults to `true`;
   - the App secrets are renamed to `BOT_APP_ID` / `BOT_PRIVATE_KEY`, keeping the old names as fallbacks until v2;
   - the merge subject drops `[skip ci]`, so the wiki PR and its merge push both report `ci / gate`.
-- Modify `.github/workflows/ci.yml`: `paths_ignore` gains `openwiki/**`.
+- Modify `.github/workflows/ci.yml`: `paths_ignore` gains `openwiki/**`, and it gains `layout` (`single` by default, or `matrix`, D34). `self.yml` covers both layouts: `node` stays `matrix`, and `python` and `shell` use the default `single`. The `red` case runs in `single`, to show that a failed slot inside `ci / checks` still turns `gate` red.
 - Changeset: `".github": minor`.
 
 - [ ] **Step 1:** make the edits. Run `actionlint -shellcheck=""`. Self-test: `self.yml` stays green.
@@ -532,7 +532,7 @@ Recipe for each repo, in this order:
 - [ ] **Step 6:** `actionlint`, draft PR. Expected: `ci / gate` green, plus the slots in the table's "checks" column. The PR body lists before → after.
 - [ ] **Step 7:** mark ready, then Jace merges. After merge, the push run on `main` shows `ci / gate`.
 
-| # | Repo | `ci.yml` inputs | Expected slots | Also |
+| # | Repo | `ci.yml` inputs (layout `single` unless noted) | Slots run inside `ci / checks` | Also |
 |---|---|---|---|---|
 | 2 | conventions | `preset: shell` | lint | Mergify |
 | 3 | engineering-log | `preset: shell` | lint | Mergify |
