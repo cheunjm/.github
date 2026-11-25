@@ -49,3 +49,9 @@ Other repos call these via `uses: cheunjm/.github/.github/workflows/{name}.yml@m
 Every callable workflow takes an optional `runner` input that sets `runs-on` (default `ubuntu-latest`). Pass a self-hosted label (e.g. `runner: mac-studio`) to run on the Mac Studio. Self-hosted jobs run on macOS, so only use it on private repos and with steps that don't assume Linux, and register a `mac-studio` runner in the caller repo first, or the jobs queue forever. The three `changeset-*.yml` workflows default `runner` to empty and fall back to the calling repo's `CI_RUNNER` variable, then `ubuntu-latest`, so a repo that sets `CI_RUNNER=mac-studio` runs them on the Studio with no per-caller change, and a repo without the variable stays on hosted runners.
 
 Local to this repo, not callable (no `workflow_call`): `ci.yml` (actionlint on workflow changes; the check is `ci / actionlint`).
+
+## Secrets and rulesets
+
+- `secrets.manifest.toml`: every pipeline secret and variable by name, 1Password reference (`op://Openclaw/...`), repos and optional GitHub Environment. It never holds values. App runtime env stays in Doppler (INF-1983, D14).
+- `scripts/sync-secrets.py [--dry-run] [--repo R] [--name N]`: reads each reference with `op read` and sets it with `gh secret set` / `gh variable set` over stdin, so values never reach argv or output. It prints one line per name, repo and environment (`ok`, `set`, `missing`, `failed`) and exits 1 on any missing or failed. Tests: `python3 -m unittest scripts/test_sync_secrets.py`.
+
