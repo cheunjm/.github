@@ -1,0 +1,12 @@
+{
+  "name": "fixture-node",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Fixture for the shared ci.yml node preset (self.yml). No dependencies.",
+  "scripts": {
+    "lint": "node -e \"require('./index.js')\"",
+    "typecheck": "node --check index.js",
+    "test": "node -e \"const assert = require('node:assert'); assert.strictEqual(require('./index.js').add(2, 3), 5)\"",
+    "format:check": "node -e \"process.exit(0)\""
+  }
+}
