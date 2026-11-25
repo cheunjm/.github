@@ -5,8 +5,8 @@ name: Release candidate
 #
 #   1. refuses while the repo is in changesets pre mode (.changeset/pre.json);
 #   2. refuses unless `ci / gate` passed on the commit being tagged;
-#   3. version X.Y.Z = what the pending changesets would release
-#      (`changeset status`), or the next patch when there are none;
+#   3. version X.Y.Z = package.json's version bumped by the highest pending
+#      changeset for this package, or the next patch when none is pending;
 #   4. N = 1 + the highest existing vX.Y.Z-<channel>.N tag, or 0;
 #   5. creates the tag vX.Y.Z-<channel>.N with the arami-bot token (so the tag
 #      push triggers the repo's cd workflow, which deploys develop) and a
@@ -71,11 +71,6 @@ on:
         type: string
         required: false
         default: "22"
-      changesets_version:
-        description: "Pinned @changesets/cli version used to read pending changesets"
-        type: string
-        required: false
-        default: "3.0.3"
       dry_run:
         description: "Resolve and print the tag without creating anything"
         type: boolean
@@ -148,18 +143,28 @@ jobs:
         id: resolve
         env:
           CHANNEL: ${{ inputs.channel }}
-          CLI_VERSION: ${{ inputs.changesets_version }}
         run: |
-          npx -y "@changesets/cli@$CLI_VERSION" status --output="$RUNNER_TEMP/status.json" >/dev/null
-          # shellcheck disable=SC2016 # a JS template literal, not shell
+          # X.Y.Z: the highest bump any pending changeset gives this package,
+          # applied to package.json's version (what `changeset version` would
+          # produce for a single package); the next patch when none is pending.
           base=$(node -e '
-            const s = require(process.argv[1]);
-            const rels = (s.releases || []).filter(r => r.type !== "none");
-            if (rels.length > 1) { console.error("multi-package repos are not supported"); process.exit(1); }
-            if (rels.length === 1) { console.log(rels[0].newVersion); process.exit(0); }
-            const v = require(process.cwd() + "/package.json").version.split("-")[0].split(".").map(Number);
-            console.log(`${v[0]}.${v[1]}.${v[2] + 1}`);
-          ' "$RUNNER_TEMP/status.json")
+            const fs = require("fs");
+            const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            const rank = { none: 0, patch: 1, minor: 2, major: 3 };
+            let bump = 1;
+            const dir = ".changeset";
+            for (const f of fs.existsSync(dir) ? fs.readdirSync(dir) : []) {
+              if (!f.endsWith(".md") || f === "README.md") continue;
+              const m = fs.readFileSync(`${dir}/${f}`, "utf8").match(/^---\n([\s\S]*?)\n---/);
+              if (!m) continue;
+              for (const line of m[1].split("\n")) {
+                const r = line.match(/^\s*["\x27]?([^"\x27:]+)["\x27]?\s*:\s*(major|minor|patch|none)\s*$/);
+                if (r && r[1].trim() === pkg.name) bump = Math.max(bump, rank[r[2]]);
+              }
+            }
+            const [M, m2, p] = pkg.version.split("-")[0].split(".").map(Number);
+            console.log(bump === 3 ? `${M + 1}.0.0` : bump === 2 ? `${M}.${m2 + 1}.0` : `${M}.${m2}.${p + 1}`);
+          ')
           base="${base%%-*}"
           highest=$(git ls-remote --tags origin "refs/tags/v$base-$CHANNEL.*" \
             | sed -E 's#.*refs/tags/v[^-]+-[a-z]+\.([0-9]+)(\^\{\})?$#\1#' | sort -n | tail -1)
