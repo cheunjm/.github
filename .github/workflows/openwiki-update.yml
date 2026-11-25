@@ -5,15 +5,17 @@ name: Wiki
 #
 # Update runs (init: false) squash-merge the PR themselves, only when every changed
 # path is under openwiki/ (plus .changeset/ when `changeset` is true) and a diff-only
-# secret scan is clean. The merge subject carries [skip ci] so push-triggered deploy
-# workflows do not run for bot docs commits. Any guard or scan failure leaves the PR
+# secret scan is clean. The PR's commit runs CI (rulesets need its checks); the squash
+# merge carries [skip ci] so app repos' push-to-main deploys don't fire for docs, until
+# INF-1983 stage 4 moves deploys to rc tags. Any guard or scan failure leaves the PR
 # open and fails the run. Init runs (init: true) never merge: the setup PR also adds
 # the AGENTS.md / CLAUDE.md pointers, which a human reviews.
 #
-# Token: the built-in GITHUB_TOKEN by default. That needs the repo setting "Allow GitHub
-# Actions to create and approve pull requests", and it is enough for repos without required
-# status checks (PRs and merges made with it trigger no other workflows). Repos that require
-# status checks need `use_app: true`: a GitHub App token, so the checks run on the bot PR.
+# Token: the arami-bot GitHub App by default (`use_app: true`, secrets BOT_APP_ID and
+# BOT_PRIVATE_KEY), so the bot PR runs CI and reports `ci / gate` and `changeset / check`,
+# which rulesets require (INF-1983 D31.3). With a ruleset the direct merge is refused and
+# the run falls back to auto-merge, so the repo needs "Allow auto-merge". `use_app: false`
+# uses GITHUB_TOKEN, which triggers no checks: only for repos without required checks.
 #
 # Two jobs, so the agent never shares a job with a write token: `generate` runs the agent
 # with a read-only token and uploads openwiki/ as an artifact; `publish` validates and copies
@@ -29,7 +31,7 @@ name: Wiki
 #
 # Caller secrets (pass with `secrets: inherit`):
 #   LITELLM_API_KEY   key for the OpenAI-compatible endpoint
-#   APP_ID, APP_PRIVATE_KEY   only with use_app: true
+#   BOT_APP_ID, BOT_PRIVATE_KEY   the arami-bot App (use_app, the default)
 # Protected branches: the merge falls back to --auto, which needs "Allow auto-merge".
 
 on:
@@ -69,23 +71,29 @@ on:
         description: "Add an empty changeset so a required changeset check passes"
         required: false
         type: boolean
-        default: false
+        default: true
       openwiki_version:
         description: "Pinned openwiki npm version"
         required: false
         type: string
         default: "0.5.0"
       use_app:
-        description: "Use a GitHub App token (repos with required status checks)"
+        description: "Use the arami-bot App token so the wiki PR runs the required checks"
         required: false
         type: boolean
-        default: false
+        default: true
     secrets:
       LITELLM_API_KEY:
         required: true
+      BOT_APP_ID:
+        required: false
+      BOT_PRIVATE_KEY:
+        required: false
       APP_ID:
+        description: "Deprecated name for BOT_APP_ID; removed in v2"
         required: false
       APP_PRIVATE_KEY:
+        description: "Deprecated name for BOT_PRIVATE_KEY; removed in v2"
         required: false
 
 permissions:
@@ -320,8 +328,8 @@ jobs:
         if: ${{ inputs.use_app }}
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
         with:
-          app-id: ${{ secrets.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          app-id: ${{ secrets.BOT_APP_ID || secrets.APP_ID }}
+          private-key: ${{ secrets.BOT_PRIVATE_KEY || secrets.APP_PRIVATE_KEY }}
 
       - name: Create OpenWiki pull request
         id: create-pr
@@ -330,7 +338,7 @@ jobs:
           token: ${{ inputs.use_app && steps.app.outputs.token || github.token }}
           add-paths: ${{ steps.paths.outputs.list }}
           branch: ${{ inputs.init && 'openwiki/init' || 'openwiki/update' }}
-          commit-message: "docs: ${{ inputs.init && 'initialize' || 'update' }} OpenWiki [skip ci]"
+          commit-message: "docs: ${{ inputs.init && 'initialize' || 'update' }} OpenWiki"
           title: "docs: ${{ inputs.init && 'initialize' || 'update' }} OpenWiki"
           body: |
             Automated OpenWiki documentation ${{ inputs.init && 'setup' || 'update' }}.
@@ -362,6 +370,8 @@ jobs:
             echo "::error::PR contains paths outside the allowlist, not merging:$bad"
             exit 1
           fi
+          # [skip ci] on the merge only: app repos still deploy on every push to main
+          # until INF-1983 stage 4, which drops this. The PR's own commit runs CI.
           subject="docs: update OpenWiki [skip ci]"
           if ! gh pr merge "$PR_NUMBER" --squash --delete-branch --subject "$subject" --body ""; then
             echo "Direct merge refused (branch protection); enabling auto-merge."

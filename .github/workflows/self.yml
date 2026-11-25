@@ -2,8 +2,9 @@ name: CI
 
 # This repo's own PR CI. It dogfoods the shared ci.yml: the `ci` job lints the
 # workflows, and the other jobs run ci.yml against the fixtures in fixtures/.
-# `red` proves gate catches a failed slot (its `red / test` check is red on
-# purpose; `red / gate` stays green). `docs-only` proves a PR whose files are
+# `node` runs `layout: matrix`, the others the default `single`. `red` proves
+# gate catches a failed slot inside `ci / checks` (red on purpose; `red / gate`
+# stays green). `docs-only` proves a PR whose files are
 # all ignored skips every slot and still passes gate.
 
 on:
@@ -27,6 +28,7 @@ jobs:
     uses: ./.github/workflows/ci.yml
     with:
       preset: node
+      layout: matrix
       working_directory: fixtures/node
       paths_ignore: ""
 

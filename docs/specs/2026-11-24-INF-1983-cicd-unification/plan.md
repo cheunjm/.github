@@ -102,6 +102,8 @@ Each stage is one PR per repo it touches. In `.github`, a stage may be a small s
 
    In each app repo, the stage-4 PR also adds the `release-candidate` caller and removes the deploy-on-push triggers. ui also leaves changesets pre mode, and its INF-1982 plan's versioning line is updated in the same PR (D27).
 
+   Once no repo deploys on push to `main`, drop `[skip ci]` from openwiki's merge subject, so wiki merges report `ci / gate` on `main` for the release button.
+
    Done when each app repo has had a develop deploy from an rc tag cut by the button, and a production deploy from a clean `vX.Y.Z` tag through `cd`, each posting to Slack. A master deploy with code newer than the latest rc must have failed with "cut a new rc first". ui's Storybook must be live at both Storybook project URLs.
 5. **`v2`.** Remove the deprecated `ci-node.yml`, `changeset-prerelease.yml` (D27), the `OPENWIKI_RUNNER` fallback (D28) and any other deprecated inputs. Done when no caller references `ci-node`, `.github` publishes `v2.0.0`, and callers move to `@v2`.
 
