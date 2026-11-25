@@ -20,6 +20,8 @@ name: CI
 #   on:
 #     pull_request:
 #       types: [opened, synchronize, reopened, ready_for_review]
+#     push:
+#       branches: [main]   # the release button needs `ci / gate` on main's HEAD
 #   permissions:
 #     contents: read
 #   jobs:
@@ -52,6 +54,7 @@ on:
         type: string
         required: false
         default: |
+          *.md
           **/*.md
           .changeset/**
           docs/**
