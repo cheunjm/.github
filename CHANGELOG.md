@@ -1,5 +1,19 @@
 # .github
 
+## 1.1.0
+
+### Minor Changes
+
+- [#143](https://github.com/cheunjm/.github/pull/143) [`142f6d9`](https://github.com/cheunjm/.github/commit/142f6d91d5b1440b38d8d8b457acc480e36e2b90) Thanks [@cheunjm](https://github.com/cheunjm)! - feat(workflows): [INF-1983] ci.yml is one job (`ci / gate` is the only check); the per-slot layout moves to ci-matrix.yml; caller workflows are named Checks and Release notes
+
+- [#142](https://github.com/cheunjm/.github/pull/142) [`57a2806`](https://github.com/cheunjm/.github/commit/57a2806fc41c9c2d08f725a78f70c0aba920d947) Thanks [@cheunjm](https://github.com/cheunjm)! - feat(workflows): [INF-1983] ci.yml runs its slots in one job by default (`layout: single`, about 2 billed minutes per run; `matrix` keeps a check per slot) and ignores `openwiki/**`; openwiki-update opens wiki PRs with the arami-bot App and an empty changeset so they pass rulesets
+
+### Patch Changes
+
+- [#136](https://github.com/cheunjm/.github/pull/136) [`0447dfc`](https://github.com/cheunjm/.github/commit/0447dfc4769d0bf3484f057a5809b52a4739706c) Thanks [@cheunjm](https://github.com/cheunjm)! - fix(workflows): [INF-1983] major-tag.yml looks up the major tag exactly (git/ref) and resolves the release commit, so the first v1 is created; add a workflow_dispatch to point a major tag at an existing release
+
+- [#138](https://github.com/cheunjm/.github/pull/138) [`4880ae6`](https://github.com/cheunjm/.github/commit/4880ae6f49276d6eae818d84a59a29a6ad0994f8) Thanks [@cheunjm](https://github.com/cheunjm)! - fix(workflows): [INF-1983] push major and prerelease tags with git instead of the refs API, which answers 403 for the App on commits that carry workflow files
+
 ## 1.0.0
 
 ### Major Changes
