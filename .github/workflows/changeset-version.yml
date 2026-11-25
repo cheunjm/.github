@@ -76,6 +76,11 @@ on:
         required: false
         type: string
         default: "3.0.3"
+      trusted-publishing:
+        description: "Publish to npmjs.org with npm trusted publishing (OIDC): upgrades npm to >=11.5.1 and sets no NODE_AUTH_TOKEN. The caller must grant `id-token: write` and register its release workflow as the package's trusted publisher."
+        required: false
+        type: boolean
+        default: false
       changelog-github-version:
         description: "Pinned @changesets/changelog-github version"
         required: false
@@ -129,6 +134,11 @@ jobs:
           mkdir -p .git/info
           printf 'node_modules/\n' >> .git/info/exclude
 
+      - name: Upgrade npm for trusted publishing
+        if: ${{ inputs.trusted-publishing }}
+        # OIDC publishing needs npm >= 11.5.1; Node 22 ships npm 10.
+        run: npm install -g npm@^11.5.1
+
       - name: Install changesets tooling (ephemeral)
         if: ${{ inputs.install-tooling }}
         env:
@@ -156,4 +166,6 @@ jobs:
         env:
           # changelog-github reads this while `changeset version` runs.
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GitHub Packages publishes with the job token; trusted publishing must not
+          # send a token, so npm falls back to the OIDC exchange.
+          NODE_AUTH_TOKEN: ${{ !inputs.trusted-publishing && secrets.GITHUB_TOKEN || '' }}
