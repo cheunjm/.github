@@ -52,6 +52,11 @@ on:
         type: boolean
         required: false
         default: false
+      trusted_publishing:
+        description: "Publish to npmjs.org with npm trusted publishing (OIDC): npm >= 11.5.1 and no token. The caller grants `id-token: write`, and the npm package's trusted publisher must be the caller's workflow file (simplest: call this from the same release.yml that publishes stable releases). Without it, publishing uses the job token (GitHub Packages)."
+        type: boolean
+        required: false
+        default: false
       install_command:
         description: "Install and build before publishing (only with publish: true); runs without the registry token, and npm publish uses --ignore-scripts"
         type: string
@@ -135,7 +140,9 @@ jobs:
             rc|next) ;;
             *) echo "::error::channel must be rc or next, got '$CHANNEL'"; exit 1 ;;
           esac
-          if [ -f .changeset/pre.json ]; then
+          # Pre mode blocks the button; a repo that is exiting pre mode (mode "exit",
+          # waiting for its stable Version PR) may cut rcs of that stable version.
+          if [ -f .changeset/pre.json ] && [ "$(node -p 'require("./.changeset/pre.json").mode')" = "pre" ]; then
             echo "::error::repo is in changesets pre mode (.changeset/pre.json); leave pre mode before using the release button"
             exit 1
           fi
@@ -172,15 +179,22 @@ jobs:
             const dir = ".changeset";
             for (const f of fs.existsSync(dir) ? fs.readdirSync(dir) : []) {
               if (!f.endsWith(".md") || f === "README.md") continue;
-              const m = fs.readFileSync(`${dir}/${f}`, "utf8").match(/^---\n([\s\S]*?)\n---/);
+              const m = fs.readFileSync(`${dir}/${f}`, "utf8").match(/^---\r?\n([\s\S]*?)\r?\n---/);
               if (!m) continue;
-              for (const line of m[1].split("\n")) {
+              for (const line of m[1].split(/\r?\n/)) {
                 const r = line.match(/^\s*["\x27]?([^"\x27:]+)["\x27]?\s*:\s*(major|minor|patch|none)\s*$/);
                 if (r && r[1].trim() === pkg.name) bump = Math.max(bump, rank[r[2]]);
               }
             }
-            const [M, m2, p] = pkg.version.split("-")[0].split(".").map(Number);
-            console.log(bump === 3 ? `${M + 1}.0.0` : bump === 2 ? `${M}.${m2 + 1}.0` : `${M}.${m2}.${p + 1}`);
+            // Same result as semver.inc, which `changeset version` uses: from a
+            // prerelease, a bump first lands on the release it was heading for.
+            const [core, pre] = pkg.version.split("-");
+            const [M, m2, p] = core.split(".").map(Number);
+            let v;
+            if (bump === 3) v = pre && m2 === 0 && p === 0 ? `${M}.0.0` : `${M + 1}.0.0`;
+            else if (bump === 2) v = pre && p === 0 ? `${M}.${m2}.0` : `${M}.${m2 + 1}.0`;
+            else v = pre ? `${M}.${m2}.${p}` : `${M}.${m2}.${p + 1}`;
+            console.log(v);
           ')
           base="${base%%-*}"
           highest=$(gh api "repos/$REPO/git/matching-refs/tags/v$base-$CHANNEL." --jq '.[].ref' \
@@ -223,11 +237,17 @@ jobs:
           if [ -n "$INSTALL" ]; then bash -euo pipefail -c "$INSTALL"; fi
           npm version "$VERSION" --no-git-tag-version --allow-same-version
 
+      - name: Upgrade npm for trusted publishing
+        if: ${{ !inputs.dry_run && inputs.publish && inputs.trusted_publishing }}
+        # OIDC publishing needs npm >= 11.5.1; Node 22 ships npm 10.
+        run: npm install -g npm@^11.5.1
+
       - name: Publish the prerelease
-        # The token is scoped to this step, and --ignore-scripts keeps package
+        # Any token is scoped to this step, and --ignore-scripts keeps package
         # lifecycle scripts from running with it. Build in install_command.
+        # Trusted publishing sends no token, so npm uses the OIDC exchange.
         if: ${{ !inputs.dry_run && inputs.publish }}
         env:
           CHANNEL: ${{ inputs.channel }}
-          NODE_AUTH_TOKEN: ${{ github.token }}
+          NODE_AUTH_TOKEN: ${{ !inputs.trusted_publishing && github.token || '' }}
         run: npm publish --tag "$CHANNEL" --ignore-scripts
