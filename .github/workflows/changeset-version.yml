@@ -66,6 +66,11 @@ on:
         required: false
         type: boolean
         default: true
+      tag:
+        description: "When `publish` is empty, create and push a vX.Y.Z git tag (plus a GitHub release) once the Version PR merges, via `changeset git-tag`. Repos that publish to npm get tags from their publish command instead."
+        required: false
+        type: boolean
+        default: false
       install-tooling:
         description: "Install the pinned changesets tooling ephemerally. Set false for repos that already declare @changesets/cli and @changesets/changelog-github and install them via install-command (monorepos, private registries)."
         required: false
@@ -159,7 +164,7 @@ jobs:
           github-token: ${{ steps.app-token.outputs.token }}
           push-with-git-cli: true
           version-script: npx changeset version
-          publish-script: ${{ inputs.publish }}
+          publish-script: ${{ inputs.publish != '' && inputs.publish || (inputs.tag && 'npx changeset git-tag' || '') }}
           pr-title: ${{ inputs.title }}
           commit-message: ${{ inputs.title }}
           create-github-releases: ${{ inputs.create-github-releases }}
