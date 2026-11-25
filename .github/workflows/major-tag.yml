@@ -9,6 +9,11 @@ on:
   push:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Stable release tag to point its major tag at (e.g. v1.0.0)"
+        required: true
 
 permissions: {}
 
@@ -32,15 +37,18 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
-          SHA: ${{ github.sha }}
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           if [[ ! "$TAG" =~ ^v([0-9]+)\.[0-9]+\.[0-9]+$ ]]; then
             echo "$TAG is not a stable release tag; nothing to do"
             exit 0
           fi
           major="v${BASH_REMATCH[1]}"
-          if gh api "repos/$REPO/git/refs/tags/$major" >/dev/null 2>&1; then
+          # The commit the release tag points at (annotated tags are dereferenced).
+          SHA=$(gh api "repos/$REPO/commits/$TAG" --jq .sha)
+          # git/ref/ (singular) matches exactly; git/refs/ falls back to a prefix
+          # match, so it would "find" v1.0.0 when v1 does not exist yet.
+          if gh api "repos/$REPO/git/ref/tags/$major" >/dev/null 2>&1; then
             gh api -X PATCH "repos/$REPO/git/refs/tags/$major" -f sha="$SHA" -F force=true >/dev/null
             echo "Moved $major to $TAG ($SHA)"
           else
