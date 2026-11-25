@@ -1,0 +1,27 @@
+name: RC self-test
+
+# Dry-runs the shared release-candidate.yml against this repo on every PR that
+# touches it: resolves the next prerelease tag and prints it, creating nothing.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - .github/workflows/release-candidate.yml
+      - .github/workflows/rc-selftest.yml
+
+permissions:
+  contents: read
+
+jobs:
+  rc:
+    uses: ./.github/workflows/release-candidate.yml
+    with:
+      channel: rc
+      dry_run: true
+
+  next:
+    uses: ./.github/workflows/release-candidate.yml
+    with:
+      channel: next
+      dry_run: true
