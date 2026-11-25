@@ -58,10 +58,10 @@ on:
         required: false
         default: false
       install_command:
-        description: "Install and build before publishing (only with publish: true); runs without the registry token, and npm publish uses --ignore-scripts"
+        description: "Install and build before publishing (only with publish: true). Runs without the registry token; the default skips dependency install scripts, which matters most with trusted_publishing"
         type: string
         required: false
-        default: "npm ci"
+        default: "npm ci --ignore-scripts"
       registry_url:
         description: "npm registry for publishing (e.g. https://npm.pkg.github.com)"
         type: string
@@ -228,7 +228,10 @@ jobs:
           gh release create "$TAG" --repo "$REPO" --prerelease --generate-notes --verify-tag
 
       - name: Install and build for publishing
-        # No registry token here: install and lifecycle scripts never see it.
+        # No registry token here. With trusted_publishing the job can mint an OIDC token
+        # in any step (per-job permissions are not available inside a reusable workflow),
+        # so the default install skips dependency lifecycle scripts; this step only runs
+        # code from the default branch, as the stable publish in changeset-version does.
         if: ${{ !inputs.dry_run && inputs.publish }}
         env:
           INSTALL: ${{ inputs.install_command }}
