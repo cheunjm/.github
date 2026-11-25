@@ -473,3 +473,101 @@ And:
 - `release-candidate` dry-runs on `.github`.
 - `.github` has its ruleset.
 - Every repo has a `mac-studio-openwiki` runner.
+
+---
+
+# Stage 3 implementation: CI migration
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task by task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** every repo runs the shared `ci.yml@v1`, reports `ci / gate`, calls everything in `.github` at `@v1`, has an openwiki caller, has no Mergify and no `auto-resolve-conflicts`, and is protected by its ruleset.
+
+**Architecture:**
+- **Task 1** fixes openwiki for rulesets in `.github` and ships it as `v1.1.0`.
+- **Tasks 2–13** are one PR per repo, all following the same recipe. Only the `ci.yml` caller's inputs differ, and those come from the table.
+- **Task 14** turns rulesets on, per repo, after that repo's PR merges.
+
+**Tech stack:** GitHub Actions YAML, `gh`, `actionlint`, `scripts/apply-rulesets.py`, `scripts/sync-secrets.py`.
+
+## Global constraints
+
+- **CI caller:** `.github/workflows/ci.yml`, `name: CI`, job id `ci`, triggered on `pull_request` (`opened, synchronize, reopened, ready_for_review`) and on `push` to `main`. It grants `contents: read`, plus `checks: write` only with `test_reports`. It uses `secrets: inherit`.
+- **Pins:** every `cheunjm/.github/.github/workflows/*.yml@main` becomes `@v1`.
+- **No `CI_RUNNER`:** `vars.CI_RUNNER` fallbacks are replaced with `ubuntu-latest` (D10). The exceptions stay: arami's pinned `eas / build`, starlog's `eas-build` Studio job, and engineering-log's `receive-entry` (one-off, D2).
+- **Branches:** `chore/INF-1983-ci-migration` with an empty changeset. Draft first, then ready once CI shows `ci / gate`.
+- **Never:** change app deploy workflows beyond `@v1` pins and `CI_RUNNER` (that is stage 4).
+
+## Review focus
+
+1. **Lost coverage:** a check that ran before and doesn't run after (an inline job dropped, a path filter too broad). Each PR body lists old checks → new checks.
+2. **openwiki loops:** a wiki merge must not set off another wiki run. Callers ignore `openwiki/**`, and so does `ci.yml`'s default `paths_ignore`.
+3. **Ruleset on before `ci / gate` exists on `main`:** apply a ruleset only after the repo's migration PR has merged and a push run on `main` shows `ci / gate`.
+4. **Secrets missing for openwiki:** each new caller needs `LITELLM_API_KEY`. It's synced only to repos that lack it, so the existing values in starlog and engineering-log aren't overwritten.
+5. **pip on Ubuntu 24.04 is externally managed:** shell-preset repos that need Python tools use `pipx run`, not `pip install`.
+
+---
+
+### Task 1: `.github`, openwiki ready for rulesets, then `v1.1.0`
+
+**Files:**
+- Modify `.github/workflows/openwiki-update.yml`:
+  - `use_app` defaults to `true`;
+  - the App secrets are renamed to `BOT_APP_ID` / `BOT_PRIVATE_KEY`, keeping the old names as fallbacks until v2;
+  - the merge subject drops `[skip ci]`, so the wiki PR and its merge push both report `ci / gate`.
+- Modify `.github/workflows/ci.yml`: `paths_ignore` gains `openwiki/**`, and it gains `layout` (`single` by default, or `matrix`, D34). `self.yml` covers both layouts: `node` stays `matrix`, and `python` and `shell` use the default `single`. The `red` case runs in `single`, to show that a failed slot inside `ci / checks` still turns `gate` red.
+- Changeset: `".github": minor`.
+
+- [ ] **Step 1:** make the edits. Run `actionlint -shellcheck=""`. Self-test: `self.yml` stays green.
+- [ ] **Step 2:** PR, CI, merge. Then Jace merges the Version PR, and `v1` moves to `v1.1.0` on its own. Verify that `gh api repos/cheunjm/.github/commits/v1` equals `v1.1.0`'s commit.
+- [ ] **Step 3:** `python3 scripts/sync-secrets.py --name LITELLM_API_KEY --repo <r>` for each repo without it (all except starlog and engineering-log).
+
+### Tasks 2–13: one migration PR per repo
+
+Recipe for each repo, in this order:
+- [ ] **Step 1:** worktree from `origin/main`. Record the PR's current check names (`gh pr checks` on its latest merged PR) as "before".
+- [ ] **Step 2:** replace inline CI or the `ci-node` caller with the caller below.
+- [ ] **Step 3:** switch every `@main` to `@v1`, and replace each `vars.CI_RUNNER || 'ubuntu-latest'` with `ubuntu-latest`.
+- [ ] **Step 4:** delete `.mergify.yml` and `auto-resolve-conflicts.yml` where they exist.
+- [ ] **Step 5:** add `.github/workflows/openwiki-update.yml`: `on: push: branches: [main], paths-ignore: ['openwiki/**', '**/*.md', '.changeset/**']` plus `workflow_dispatch` with `init`. Grant `contents: write` and `pull-requests: write`, and use `secrets: inherit`. Repos with no wiki yet get `init: true` on their first dispatch.
+- [ ] **Step 6:** `actionlint`, draft PR. Expected: `ci / gate` green, plus the slots in the table's "checks" column. The PR body lists before → after.
+- [ ] **Step 7:** mark ready, then Jace merges. After merge, the push run on `main` shows `ci / gate`.
+
+| # | Repo | `ci.yml` inputs (layout `single` unless noted) | Slots run inside `ci / checks` | Also |
+|---|---|---|---|---|
+| 2 | conventions | `preset: shell` | lint | Mergify |
+| 3 | engineering-log | `preset: shell` | lint | Mergify |
+| 4 | clipsync | `preset: shell` | lint | — |
+| 5 | claude-statusline | `preset: shell`, `lint_command: shellcheck statusline.sh install.sh`, `test_command: bash tests/statusline.sh` (new script holding the 4 inline jq checks) | lint, test | Mergify |
+| 6 | dotclaw | `preset: shell`, `lint_command: find . -name "*.sh" -not -path "./.git/*" -not -name start-tmux.sh -exec shellcheck -S error {} + && pipx run ruff==0.16.8 check --select E9,F821,F811 scripts/ hooks/ workspace*/` | lint | Mergify |
+| 7 | mem0 | `preset: python`, `install_command: python3 -m pip install "ruff==$RUFF_VERSION"`, `test_command: python3 -c "import ast, pathlib; [ast.parse(p.read_text()) for p in pathlib.Path('.').rglob('*.py')]"` | lint, test, format | — |
+| 8 | star-organizer | `preset: python`, `lint_command: ruff check organize_stars.py test_organize_stars.py`, `typecheck_command: mypy organize_stars.py test_organize_stars.py --ignore-missing-imports`, `format_command: none` | lint, typecheck, test | auto-resolve; `organize-stars.yml` to ubuntu |
+| 9 | maps-organizer | `preset: node`, `format_command: none`, `audit_command: none` | lint, typecheck, test | auto-resolve |
+| 10 | portfolio | `preset: node`, `node_version: "22"`, `typecheck_command: npm run check`, `build_command: npm run build`, lint/test/format/audit `none` | typecheck, build | auto-resolve; needs a `mac-studio-portfolio` wiki run (D28) |
+| 11 | arami | `preset: node`, `typecheck_command: npm run check-types` | lint, typecheck, test, format, audit | Mergify; `e2e.yml` → `@v1` (Version PR and dispatch only, unchanged) |
+| 12 | starlog | `preset: node`, `typecheck_command: npm run check-types` | lint, typecheck, test, format, audit | openwiki caller becomes thin; drop `OPENWIKI_RUNNER`; `db-migration-check` → `@v1` |
+| 13 | ui | `preset: node`, `test_command: npm test -- --ci --coverage`, `build_command: npm run storybook:build`, `codecov: true`, `codecov_directory: coverage` | all six | Mergify; `ci / contrast` removed (D21); `ci / api` and `ci / stories` stay as local jobs in the same workflow; no e2e (D33) |
+
+### Task 13b: Android e2e on the Studio (D33)
+
+Runs after arami (Task 11) and starlog (Task 12) have moved to `@v1`, so `@main` changes to `e2e-maestro.yml` can't reach them before a release.
+
+- [ ] **Step 1:** in `.github`, port `e2e-maestro.yml`'s `android` job to macOS arm64.
+  - Remove the KVM step and `reactivecircus/android-emulator-runner`.
+  - Install the emulator and `system-images;android-<api>;google_apis;arm64-v8a` with `sdkmanager` under `~/Library/Android` (the host-path rules in `CLAUDE.md` apply), and boot headless (`-no-window -no-audio -no-boot-anim`) using HVF.
+  - Delete a throwaway AVD in an `always()` step, like the iOS simulator.
+  - `android-arch` defaults to `arm64-v8a`. `android-runner` and `web-runner` default to `mac-studio`.
+- [ ] **Step 2:** prove it with arami: dispatch arami's `e2e.yml` pinned to the PR branch, with `E2E_ANDROID_ARCH=arm64-v8a`. Expected: `e2e / android` green on `mac-studio-arami`.
+- [ ] **Step 3:** merge, then Jace merges the `.github` Version PR, and `v1` moves.
+- [ ] **Step 4:** follow-up PRs. In arami, `E2E_ANDROID_ARCH=arm64-v8a`. In starlog, replace the inline Android job with an `e2e-maestro@v1` caller, `platforms: android`, triggered on the Version PR and by dispatch. Dispatch each once: green on the Studio.
+
+### Task 14: rulesets
+
+- [ ] **Step 1:** after each repo's PR merges and `main` shows `ci / gate`, set `ruleset = true` for it in `secrets.manifest.toml` (one `.github` PR can batch several repos).
+- [ ] **Step 2:** apply with `python3 scripts/apply-rulesets.py --repo <r>` (Jace runs it if it's denied for the AI). Check with a throwaway PR whose `ci / gate` is red: `mergeStateStatus` must be `BLOCKED`. Close it.
+
+### Stage 3 done
+
+- No repo references `@main` or `ci-node`, and none has a `.mergify.yml` or `auto-resolve-conflicts`.
+- Every repo's latest PR shows `ci / gate`, and its ruleset blocks a red gate.
+- Every repo has an openwiki caller that has run once on `mac-studio-openwiki`.
+
