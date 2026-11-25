@@ -543,9 +543,22 @@ Recipe for each repo, in this order:
 | 8 | star-organizer | `preset: python`, `lint_command: ruff check organize_stars.py test_organize_stars.py`, `typecheck_command: mypy organize_stars.py test_organize_stars.py --ignore-missing-imports`, `format_command: none` | lint, typecheck, test | auto-resolve; `organize-stars.yml` to ubuntu |
 | 9 | maps-organizer | `preset: node`, `format_command: none`, `audit_command: none` | lint, typecheck, test | auto-resolve |
 | 10 | portfolio | `preset: node`, `node_version: "22"`, `typecheck_command: npm run check`, `build_command: npm run build`, lint/test/format/audit `none` | typecheck, build | auto-resolve; needs a `mac-studio-portfolio` wiki run (D28) |
-| 11 | arami | `preset: node`, `typecheck_command: npm run check-types` | lint, typecheck, test, format, audit | Mergify; `e2e.yml` → `@v1` |
+| 11 | arami | `preset: node`, `typecheck_command: npm run check-types` | lint, typecheck, test, format, audit | Mergify; `e2e.yml` → `@v1` (Version PR and dispatch only, unchanged) |
 | 12 | starlog | `preset: node`, `typecheck_command: npm run check-types` | lint, typecheck, test, format, audit | openwiki caller becomes thin; drop `OPENWIKI_RUNNER`; `db-migration-check` → `@v1` |
-| 13 | ui | `preset: node`, `test_command: npm test -- --ci --coverage`, `build_command: npm run storybook:build`, `codecov: true`, `codecov_directory: coverage` | all six | Mergify; `ci / contrast` removed (D21); `ci / api` and `ci / stories` stay as local jobs in the same workflow |
+| 13 | ui | `preset: node`, `test_command: npm test -- --ci --coverage`, `build_command: npm run storybook:build`, `codecov: true`, `codecov_directory: coverage` | all six | Mergify; `ci / contrast` removed (D21); `ci / api` and `ci / stories` stay as local jobs in the same workflow; no e2e (D33) |
+
+### Task 13b: Android e2e on the Studio (D33)
+
+Runs after arami (Task 11) and starlog (Task 12) have moved to `@v1`, so `@main` changes to `e2e-maestro.yml` can't reach them before a release.
+
+- [ ] **Step 1:** in `.github`, port `e2e-maestro.yml`'s `android` job to macOS arm64.
+  - Remove the KVM step and `reactivecircus/android-emulator-runner`.
+  - Install the emulator and `system-images;android-<api>;google_apis;arm64-v8a` with `sdkmanager` under `~/Library/Android` (the host-path rules in `CLAUDE.md` apply), and boot headless (`-no-window -no-audio -no-boot-anim`) using HVF.
+  - Delete a throwaway AVD in an `always()` step, like the iOS simulator.
+  - `android-arch` defaults to `arm64-v8a`. `android-runner` and `web-runner` default to `mac-studio`.
+- [ ] **Step 2:** prove it with arami: dispatch arami's `e2e.yml` pinned to the PR branch, with `E2E_ANDROID_ARCH=arm64-v8a`. Expected: `e2e / android` green on `mac-studio-arami`.
+- [ ] **Step 3:** merge, then Jace merges the `.github` Version PR, and `v1` moves.
+- [ ] **Step 4:** follow-up PRs. In arami, `E2E_ANDROID_ARCH=arm64-v8a`. In starlog, replace the inline Android job with an `e2e-maestro@v1` caller, `platforms: android`, triggered on the Version PR and by dispatch. Dispatch each once: green on the Studio.
 
 ### Task 14: rulesets
 

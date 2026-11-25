@@ -344,3 +344,17 @@ D20–D23 came from the builder check on 2026-11-24.
 - **Chosen by:** human
 - **Impact:** med
 
+## D33: e2e runs only on the Version PR, every platform on the Studio
+- **Supersedes:** D13's "web e2e stays on hosted runners", and D21's requirement that ui's ruleset include `e2e / web`.
+- **Problem:** Jace: "e2e should only run on versioning, and it should run on mac studio." arami and starlog already run e2e only on the Version PR (`changeset-release/main`) and by dispatch, but Android runs on hosted Linux. ui no longer has an e2e workflow, yet its manifest entry still lists `e2e / web` as a required check, which would block every ui PR. Rulesets also can't require e2e: on a normal PR the caller job is skipped, so only a check named `e2e` appears, never `e2e / android`.
+- **Options:** A: Version PR only, on the Studio, enforced at release time; B: also on every PR; C: keep Android hosted.
+- **Choice:** A.
+  - **Trigger:** e2e runs on the Version PR (opened by arami-bot, same-repo) and by `workflow_dispatch`, never on other PRs.
+  - **Runners:** `e2e-maestro.yml` defaults `android-runner` and `web-runner` to `mac-studio`. The Android job is ported from the Linux KVM x86_64 emulator to the macOS arm64 emulator (pulled forward from stage 4 into stage 3). starlog's inline Android job moves onto `e2e-maestro`.
+  - **Enforcement:** not through rulesets. Jace merges the Version PR by hand and sees the e2e result. In stage 4 the master deploy also checks that e2e passed on the Version PR that produced the release.
+  - **ui:** `e2e / web` is removed from its `extra_checks`. ui has no e2e until it adds one.
+- **Rationale:** The Studio already does the iOS run. Running every platform there keeps one environment, and the Version PR is the one point where a release is decided.
+- **Proposed by:** human (trigger, runner), ai (enforcement, port timing)
+- **Chosen by:** human
+- **Impact:** med
+
