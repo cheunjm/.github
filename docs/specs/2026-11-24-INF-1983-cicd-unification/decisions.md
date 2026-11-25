@@ -43,7 +43,7 @@ D1–D18 were settled in a grilling session on 2026-11-23/24. Recommended answer
 ## D5: CI shape across stacks
 - **Problem:** Repos are Node, Python, shell or mixed; six run inline CI that reinvents the paths filter and gate (named `gate` or `ci-status`).
 - **Options:** A: one workflow per stack (`ci-node`, `ci-python`, `ci-shell`); B: one stack-agnostic `ci` with fixed slots (lint, typecheck, test, format, audit, build), toolchain inputs, a `preset` for default commands, built-in paths filter and `gate`; C: extend `ci-node` with Python.
-- **Choice:** B. `ci-node` becomes a deprecated thin wrapper and is removed in `v2`.
+- **Choice:** B. `ci-node` becomes a deprecated thin wrapper and is removed in `v2`. **Partly superseded by D30.1:** `ci-node` is deprecated as it is, not turned into a wrapper.
 - **Rationale:** Identical check names in every repo (`ci / lint`, …, `ci / gate`), so rulesets and tooling treat all repos alike. Mixed repos combine commands within a slot.
 - **Proposed by:** ai
 - **Chosen by:** human
@@ -107,7 +107,7 @@ D1–D18 were settled in a grilling session on 2026-11-23/24. Recommended answer
 ## D12: openwiki runner
 - **Problem:** `openwiki-update` calls LiteLLM on the Studio's localhost via dedicated `mac-studio-*-openwiki` runners.
 - **Options:** A: keep on the Studio as a named exception; B: hosted, calling the model provider directly with a provider API key; C: remove.
-- **Choice:** B. Deregister the orphaned `mac-studio-engineering-log-openwiki` runner.
+- **Choice:** B. Deregister the orphaned `mac-studio-engineering-log-openwiki` runner. **Superseded by D28.**
 - **Rationale:** Jace's call: no Studio dependency outside EAS builds and native e2e.
 - **Proposed by:** ai (recommended A)
 - **Chosen by:** human
@@ -278,3 +278,44 @@ D20–D23 came from the builder check on 2026-11-24.
 - **Proposed by:** human (same flow everywhere, keep next and rc), ai (channel input, rc-only master gate)
 - **Chosen by:** human
 - **Impact:** med
+
+## D28: openwiki in every repo, on the Studio
+- **Supersedes:** D12.
+- **Problem:** openwiki's model access is the Studio's LiteLLM (`:4001`, `chatgpt/gpt-6.1-sol`), which uses Jace's ChatGPT subscription login, not an API key. Hosted runners (D12) would need a paid API key, and Jace wants openwiki in more repos, which would multiply that cost. A runner runs one job at a time, so sharing the app repos' `mac-studio` runner would queue wiki runs against EAS builds and native e2e.
+- **Options:** A: hosted with a paid API key; B: the Studio, using the subscription; C: remove openwiki.
+- **Choice:** B, in all 12 repos.
+  - **Runner label:** every caller runs on `mac-studio-openwiki`. arami, starlog and ui get a second runner, `mac-studio-<repo>-openwiki`; starlog already has one. The other 9 repos add the label to their existing, now idle `mac-studio-<repo>` runner; portfolio first gets a runner registered.
+  - **Trigger:** push to `main`, ignoring docs-only and `.changeset`-only pushes. Runs queue rather than cancel.
+  - **Model:** the shared workflow defaults to `http://127.0.0.1:4001/v1`, `gpt-6.1-sol` and the Responses API, so callers pass nothing.
+  - **Compatibility:** `vars.OPENWIKI_RUNNER` is still honored until stage 3 moves starlog's caller, and is removed in stage 5.
+- **Rationale:** No per-token cost, and the wiki is not on any release path. A dedicated label keeps mobile work from waiting.
+- **Proposed by:** human (more repos), ai (label scheme)
+- **Chosen by:** human
+- **Impact:** low
+
+## D29: Remove `auto-resolve-conflicts`
+- **Supersedes:** the part of D2 that moved `auto-resolve-conflicts` into `.github`.
+- **Problem:** The workflow, in maps-organizer, star-organizer and portfolio, posts `@claude` comments asking for a rebase and a force-push. No repo has a responder (`claude.yml` was removed in INF-1658), so it only adds comments. It also breaks the conventions rule that CI/CD must not depend on an agent.
+- **Options:** A: remove it; B: share a deterministic comment-and-label version; C: share it as is.
+- **Choice:** A. The three copies are deleted in stage 3, and no shared version is built.
+- **Rationale:** It has done nothing since its responder was removed, and GitHub already shows conflicts on the PR.
+- **Proposed by:** ai
+- **Chosen by:** human
+- **Impact:** low
+
+
+## D30: Stage 2 details settled by the AI
+- **Problem:** Gaps found while writing the stage 2 tasks.
+- **Options:** n/a.
+- **Choice:**
+  1. **`ci-node` is not a wrapper** (supersedes that part of D5). A reusable workflow that calls another adds a level to check names (`ci / ci / lint`). Rewriting it would rename every `ci-node` caller's checks, so it stays as it is, marked deprecated, and is removed in v2 as planned.
+  2. **The manifest is TOML** (`secrets.manifest.toml`), read with stdlib `tomllib`. The Studio's Python has no PyYAML, and the scripts stay dependency-free.
+  3. **File names:** the shared CI is `ci.yml` (callers write `uses: …/ci.yml@v1`), and `.github`'s own PR CI is renamed `self.yml`.
+  4. **Slot design:** a `plan` job resolves the preset defaults, overrides and paths filter, then one matrix job runs the slots, named per slot so the checks stay `ci / <slot>`. An empty command means the preset default, and `none` turns a slot off.
+  5. **Self-test:** an `expect_failure` input inverts `gate`, so the deliberately red self-test leaves a green gate. Its slot check is red by design.
+  6. **The `CI_RUNNER` fallback is not carried into presets.** No repo sets it (D10), and the presets assume hosted Ubuntu.
+  7. **ui's extra inline jobs** (`ci / api`, `ci / stories`) become required through the manifest's `extra_checks` for ui (Task 6), rather than through new slots (consistent with D21).
+- **Rationale:** Each keeps current callers working, keeps the tooling dependency-free, or follows an earlier decision.
+- **Proposed by:** ai
+- **Chosen by:** ai
+- **Impact:** low

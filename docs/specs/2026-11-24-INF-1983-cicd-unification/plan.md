@@ -47,11 +47,11 @@ Repos in scope (D3): arami, claude-statusline, clipsync, conventions, dotclaw, e
 - **Native e2e:** `e2e-maestro` runs both iOS and Android on `mac-studio` (D13). The Android job is ported from Linux/KVM to macOS arm64. starlog's inline Android e2e moves onto it (D22.1). Web e2e stays on hosted runners.
 - **Tags:** the app repos' release flow gains a step that creates `vX.Y.Z` tags with the arami-bot token, because nothing creates them today (D22.8).
 - **Release button (D26, D27):** a shared `release-candidate.yml`, plus a `workflow_dispatch` caller in arami, starlog and ui. It takes `channel: next | rc` (default `rc`) and requires `ci / gate` green on the `main` HEAD. It computes `X.Y.Z` from pending changesets, or the next patch when there are none, and pushes `vX.Y.Z-<channel>.N` (N from 0, per version and channel; the next N is the highest existing plus one) with the arami-bot token. In a repo that publishes a package, it also publishes `X.Y.Z-<channel>.N` under the matching npm dist-tag, setting the version in CI only. It refuses to run while `.changeset/pre.json` exists.
-- **openwiki:** `openwiki-update` moves to hosted runners and calls the model provider directly (D12).
-- **`auto-resolve-conflicts`:** moves into `.github` (D2).
+- **openwiki (D28):** `openwiki-update` runs in all 12 repos on the `mac-studio-openwiki` runner label, using the Studio's LiteLLM. The shared workflow defaults its runner, endpoint and model, so callers pass nothing.
+- **`auto-resolve-conflicts` (D29):** removed from maps-organizer, star-organizer and portfolio. There is no shared version.
 - **Versioning (D4):** a floating `v1` tag that moves when the `.github` Version Packages PR merges. All callers in all repos move from `@main` to `@v1`.
 - **Fixtures (D15):** fixture projects (`fixtures/node`, `fixtures/python`, `fixtures/shell`) exercised by `.github`'s own PR CI, plus a `cd` `dry_run` job.
-- **Secrets (D14):** a manifest at `secrets.manifest.yml` holding names, `op://` refs, repo lists and, where needed, a GitHub Environment (`develop` or `master`). A sync script that pushes values from 1Password to each repo with `gh secret set` over stdin. Secret names are standardized as part of this.
+- **Secrets (D14):** a manifest at `secrets.manifest.toml` (D30) holding names, `op://` refs, repo lists and, where needed, a GitHub Environment (`develop` or `master`). A sync script that pushes values from 1Password to each repo with `gh secret set` over stdin. Secret names are standardized as part of this.
 - **Rulesets (D18, D19):** a script that applies the standard ruleset (require `ci / gate` and `changeset / check`, plus `e2e / web` for ui, with admin bypass) to the repos in the manifest. It runs per repo only after that repo emits `ci / gate`.
 - **Removals:**
   - `ci-autofix.yml` and its callers (D11);
@@ -78,16 +78,17 @@ Each stage is one PR per repo it touches. In `.github`, a stage may be a small s
 1. **Cleanup.** Remove `ci-autofix.yml` from `.github` and its callers from claude-statusline, conventions, dotclaw, mem0 and ui. Unset arami's `CI_RUNNER`, and hardcode `mac-studio` in its current `eas-build.yml` so builds stay on the Studio until stage 4 (D22.7). Deregister the orphaned openwiki runner. Done when no repo's `origin/main` references `ci-autofix` or a deleted workflow, and arami CI runs on `ubuntu-latest`.
 2. **`.github` foundation.**
    - Add the shared `ci` with presets and gate, plus the fixtures.
-   - Turn `ci-node` into a wrapper over `ci`.
-   - Add the `v1` tag automation, the app-repo `vX.Y.Z` tagging step, the `release-candidate` workflow, the secrets manifest and sync script, the ruleset script, and `auto-resolve-conflicts`.
-   - Move `openwiki-update` to hosted runners.
+   - Mark `ci-node` deprecated (D30.1).
+   - Add the `v1` tag automation, the app-repo `vX.Y.Z` tagging step, the `release-candidate` workflow, the secrets manifest and sync script, and the ruleset script.
+   - Point `openwiki-update` at the `mac-studio-openwiki` label and set up that label in every repo (D28).
    - Have `.github` call its own shared `ci`.
 
    Done when `.github` PR CI runs the shared `ci` green against all three fixtures, the first Version PR merge creates the `v1.x.y` tag and moves `v1`, and the sync script dry-run lists every repo/secret pair with no missing `op://` ref.
 3. **CI migration.** In each of the 12 repos, one PR that:
    - switches every `cheunjm/.github` caller to `@v1`;
    - replaces inline CI or `ci-node` with the shared `ci`;
-   - adds `auto-resolve-conflicts` where the repo used it;
+   - deletes `auto-resolve-conflicts.yml` where present (D29);
+   - adds an `openwiki-update.yml` caller (D28);
    - removes `.mergify.yml`.
 
    After merge, apply that repo's ruleset, once Pro is active. Done when every repo reports `ci / gate` on a PR, has no `@main` reference to `.github`, and its ruleset blocks a merge while `ci / gate` is red.
@@ -102,7 +103,7 @@ Each stage is one PR per repo it touches. In `.github`, a stage may be a small s
    In each app repo, the stage-4 PR also adds the `release-candidate` caller and removes the deploy-on-push triggers. ui also leaves changesets pre mode, and its INF-1982 plan's versioning line is updated in the same PR (D27).
 
    Done when each app repo has had a develop deploy from an rc tag cut by the button, and a production deploy from a clean `vX.Y.Z` tag through `cd`, each posting to Slack. A master deploy with code newer than the latest rc must have failed with "cut a new rc first". ui's Storybook must be live at both Storybook project URLs.
-5. **`v2`.** Remove the `ci-node` wrapper, `changeset-prerelease.yml` (D27) and any other deprecated inputs. Done when no caller references `ci-node`, `.github` publishes `v2.0.0`, and callers move to `@v2`.
+5. **`v2`.** Remove the deprecated `ci-node.yml`, `changeset-prerelease.yml` (D27), the `OPENWIKI_RUNNER` fallback (D28) and any other deprecated inputs. Done when no caller references `ci-node`, `.github` publishes `v2.0.0`, and callers move to `@v2`.
 
 ## Verification
 
@@ -275,3 +276,200 @@ Runners to remove (and nothing else):
 - No repo's `origin/main` references `ci-autofix` (Task 4 step 1 grep plus the `.github` grep).
 - arami has no `CI_RUNNER` variable or reference, and its `ci / gate` and `eas / build-gate` run on `ubuntu-latest`. Its `eas / build` is pinned to `mac-studio`.
 - The Studio runs no service for engineering-log openwiki, crosscheck or stock-tracker.
+
+---
+
+# Stage 2 implementation: `.github` foundation
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task by task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** everything stage 3 and 4 callers need exists in `.github`, is tested by `.github`'s own CI, and ships as `v1`.
+
+**Architecture:** five independent PR groups in `.github`, plus Studio runner setup:
+- **A** (stack): the shared `ci` (Task 1), then deprecating `ci-node` (Task 2).
+- **B** (stack): tagging and `v1` (Task 3), then `release-candidate` (Task 4).
+- **C** (stack): the secrets manifest and sync (Task 5), then rulesets (Task 6).
+- **D** (single PR): openwiki (Task 7).
+
+Callers still use `@main` until stage 3, so every change to an existing workflow must keep current callers working.
+
+**Tech stack:** GitHub Actions YAML, bash, Python 3 stdlib only (`tomllib`, `json`, `subprocess`), `gh`, `op`, `actionlint` (CI runs `-shellcheck=""`), `@changesets/cli` 3.0.3.
+
+## Global constraints
+
+- **Names:** check names are `<caller job> / <job name>`, and the shared CI's job names are exactly `lint`, `typecheck`, `test`, `format`, `audit`, `build` and `gate` (D5).
+- **Permissions:** no job-level `permissions:` inside reusable workflows (conventions `ci-tooling.md`). Callers grant them.
+- **Untrusted input:** inputs reach `run:` only through `env:`, never `${{ }}` inside the script.
+- **Third-party actions:** pinned by SHA with a version comment.
+- **Secrets:** never in argv or logs. Values go `op read` → stdin → `gh secret set` (D14).
+- **Backward compatibility:** existing inputs of `ci-node.yml`, `changeset-version.yml` and `openwiki-update.yml` keep their meaning and defaults until `v2`.
+- **Branches and commits:** `feat/INF-1983-<slug>` per layer, `feat(workflows): [INF-1983] …`. Each layer adds a `.changeset/*.md`: `".github": minor` for new workflows, `patch` otherwise.
+
+## Review focus
+
+1. **`@main` callers break on merge:** the 5 `ci-node` callers, every `changeset-version` caller and starlog's openwiki caller pick up changes immediately. Task 2 changes only comments. Task 3's new input defaults to off. Task 7 proves the change from starlog, pinned to the PR branch, before merge.
+2. **A skipped or absent slot passes the gate, but a cancelled one must not:** Task 1's self-test covers a red slot. The gate must also treat `cancelled` as a failure, so it checks `toJSON(needs)` results for both values.
+3. **A docs-only PR:** every slot is skipped by the paths filter and `gate` still reports success. This is required, or rulesets deadlock docs PRs. Task 1 has a self-test case for it.
+4. **Prerelease counter collisions:** two button presses racing, or an existing tag. Task 4 must fail rather than overwrite: tag creation through the refs API returns 422 if the tag exists.
+5. **A missing 1Password item:** the sync dry-run must list every missing ref and exit non-zero, without printing any value. Task 5 tests this with a deliberately bad ref.
+
+---
+
+### Task 1: shared `ci.yml`, fixtures and self-test
+
+**Files:**
+- Rename: `.github/workflows/ci.yml` (local actionlint) → `.github/workflows/self.yml` (`name: CI`)
+- Create: `.github/workflows/ci.yml` (reusable, `on: workflow_call`)
+- Create: `fixtures/node/{package.json,package-lock.json,index.js}`, `fixtures/python/{app.py,test_app.py}`, `fixtures/shell/{tool.sh,test_tool.sh}`
+
+**Interfaces (produces):** `ci.yml` inputs. Empty means the preset default. The literal `none` turns a slot off.
+
+| Input | Default |
+|---|---|
+| `preset` (required) | `node` \| `python` \| `shell` |
+| `runner` | `ubuntu-latest` |
+| `working_directory` | `.` |
+| `node_version` | `20` |
+| `python_version` | `3.12` |
+| `ruff_version` | `0.16.8` |
+| `mypy_version` | `1.19.1` |
+| `apt_packages` | (empty) |
+| `install_command` | node `npm ci`; python `pip install ruff==$RUFF mypy==$MYPY` plus `-r requirements.txt` if present; shell nothing |
+| `lint_command` | node `npm run lint`; python `ruff check .`; shell `git ls-files -z '*.sh' \| xargs -0 -r shellcheck -S warning` |
+| `typecheck_command` | node `npm run typecheck`; python and shell none |
+| `test_command` | node `npm run test`; python `python3 -m unittest discover -s . -p "test_*.py" -v`; shell none |
+| `format_command` | node `npm run format:check`; python `ruff format --check .`; shell none |
+| `audit_command` | node `npm audit --audit-level=critical --omit=dev`; others none |
+| `build_command` | none for all presets |
+| `paths_ignore` | `**/*.md` `.changeset/**` `docs/**` (newline-separated) |
+
+- Carried over from `ci-node`: `registry_scope` + `PKG_READ_TOKEN`, `test_reports`, `codecov` + `codecov_directory` + `codecov_flags` + `CODECOV_TOKEN`, `turbo_team` + `TURBO_TOKEN`.
+- **`expect_failure`** (boolean, default false; for self-test only): `gate` passes only if a slot failed.
+- **Jobs:**
+  - `plan` resolves the paths filter (`dorny/paths-filter`, SHA-pinned, `predicate-quantifier: every`) and the effective command per slot. It outputs the JSON list of slots to run.
+  - One `slot` job runs a matrix over that list, with `name: ${{ matrix.slot }}`, so the checks read `ci / lint` and so on.
+  - `gate` needs `[plan, slot]` and runs `if: always()`.
+
+- [ ] **Step 1:** write `self.yml` with these jobs:
+  - `ci` calls `./.github/workflows/ci.yml` with `preset: shell` and `lint_command: actionlint -shellcheck=""` (it keeps actionlint coverage).
+  - `node`, `python` and `shell` call it with `working_directory: fixtures/<x>`.
+  - `red` calls it on `fixtures/shell` with `test_command: exit 1` and `expect_failure: true`.
+  - `docs-only` is the paths-only case: it calls it with `paths_ignore: '**'`, so every slot skips.
+- [ ] **Step 2:** open the layer as a draft PR before `ci.yml` exists. Expected: `self.yml` fails to resolve the reusable workflow, which is the red baseline.
+- [ ] **Step 3:** implement `ci.yml` and the three fixtures. Each fixture passes its preset's defaults with no overrides; the node fixture has scripts `lint`, `typecheck`, `test` and `format:check` that run `node -e` one-liners and no dependencies.
+- [ ] **Step 4:** push and check the PR's checks. Expected:
+  - `ci / lint`, `node / *`, `python / *` and `shell / *` pass.
+  - The gates `ci / gate`, `node / gate`, `python / gate`, `shell / gate`, `red / gate` and `docs-only / gate` are all green.
+  - `red / test` is red, which is intended.
+  - `docs-only` has no slot checks.
+- [ ] **Step 5:** add `ci.yml` to `CLAUDE.md`'s table, update the `self.yml` line, add the changeset (`minor`), commit and mark ready.
+
+### Task 2: deprecate `ci-node.yml`
+
+`ci-node.yml` is not rewritten as a wrapper (D30.1). A nested reusable call would rename every caller's checks to `ci / ci / <slot>`.
+
+**Files:** modify `.github/workflows/ci-node.yml` (header comment only) and `CLAUDE.md` (its row says "deprecated: use `ci.yml` with `preset: node`; removed in v2").
+
+- [ ] **Step 1:** edit the header and the row, add a `patch` changeset, and commit on top of Task 1's layer.
+- [ ] **Step 2:** check that `git diff origin/main -- .github/workflows/ci-node.yml` touches comment lines only, so the `@main` callers can't be affected.
+
+### Task 3: `vX.Y.Z` tags on Version PR merge, and the floating `v1`
+
+**Files:**
+- Modify: `.github/workflows/changeset-version.yml`. Add input `tag` (boolean, default false). When it is true and `publish` is empty, the action's `publish-script` is `npx changeset tag`.
+- Create: `.github/workflows/major-tag.yml`. Trigger: `push: tags: ['v[0-9]+.[0-9]+.[0-9]+']`. It force-moves `v<MAJOR>` to the pushed commit through `PATCH repos/{repo}/git/refs/tags/v<MAJOR>` (`force: true`), creating the ref if it is missing, with the arami-bot token.
+- Modify: `.github/workflows/release.yml`. Pass `tag: true`.
+
+- [ ] **Step 1 (spike, local):** in a scratch dir under the session scratchpad, `git init` a single private package `{name: x, version: 1.0.0, private: true}` with `.changeset/config.json` set to `privatePackages: {version: true, tag: true}`. Run `npx @changesets/cli@3.0.3 tag`. Expected: the tag `v1.0.0` is created, and stdout has a `New tag:` line, which `changesets/action` parses to create the GitHub release. Record the exact output in the PR body.
+- [ ] **Step 2:** implement the three changes. Run `actionlint`.
+- [ ] **Step 3:** after merge, merge the standing `.github` Version PR, https://github.com/cheunjm/.github/pull/97 (Jace merges it). Expected: tag `v1.0.0` and a GitHub release; `major-tag.yml` runs and `v1` points at `v1.0.0`. Check with `gh api repos/cheunjm/.github/git/refs/tags/v1`. This is stage 2's first done criterion.
+
+### Task 4: `release-candidate.yml`
+
+**Files:** create `.github/workflows/release-candidate.yml` (reusable), and add a `release-candidate` job to `self.yml` with `dry_run: true`.
+
+**Interfaces (produces):**
+- **Inputs:** `channel` (`next` \| `rc`, default `rc`), `publish` (boolean, default false), `registry_url`, `scope`, `node_version` (`22`) and `dry_run` (boolean).
+- **Secrets:** `BOT_APP_ID`, `BOT_PRIVATE_KEY`, `NODE_AUTH_TOKEN` (for publish).
+- **Outputs:** `tag` (for example `v1.4.0-rc.0`) and `version`.
+
+- [ ] **Step 1:** add the self-test job (`dry_run: true` against `.github` itself). Expected red: the workflow doesn't exist yet.
+- [ ] **Step 2:** implement the steps, in order. Each check fails the job with a one-line message:
+  1. If `.changeset/pre.json` exists, fail with "repo is in changesets pre mode".
+  2. If the `ci / gate` check run on `github.sha` isn't `success` (`gh api repos/{repo}/commits/{sha}/check-runs?check_name=ci%20/%20gate`), fail with "ci / gate is not green on <sha>".
+  3. Set `X.Y.Z` to the single entry's `newVersion` from `npx @changesets/cli@3.0.3 status --output=status.json`; if there are no releases, use the patch after `package.json`'s version.
+  4. Set `N` to 1 + the highest existing `vX.Y.Z-<channel>.<n>` from `git ls-remote --tags`, or 0 if there is none.
+  5. Unless `dry_run`, create the tag with `POST repos/{repo}/git/refs` using the bot token (a 422 means the tag exists, so fail and don't retry), then `gh release create <tag> --prerelease --generate-notes`.
+  6. If `publish`, run `npm version <version> --no-git-tag-version`, then `npm publish --tag <channel>`.
+- [ ] **Step 3:** push. Expected: the self-test prints `tag=v<next>-rc.0`, and nothing is created (`gh api repos/cheunjm/.github/git/refs/tags` is unchanged).
+- [ ] **Step 4:** add a `CLAUDE.md` row and a `minor` changeset, then commit.
+
+### Task 5: secrets manifest and sync
+
+**Files:** create `secrets.manifest.toml` and `scripts/sync-secrets.py`; test with `scripts/test_sync_secrets.py` (stdlib `unittest`).
+
+**Interfaces (produces):**
+- **Manifest:** one `[[secret]]` table per value, with `name`, `ref` (an `op://Openclaw/...` path), `repos` (a list, or `"all"`), an optional `env` (`develop` or `master`), and `kind` (`secret` default, or `variable`).
+- **Per-repo settings:** `[repos.<name>]` with `ruleset = true|false` and `extra_checks = [...]`, consumed by Task 6.
+- **Script:** `sync-secrets.py [--dry-run] [--repo R] [--name N]`. It exits 1 if any `op read` fails, and it prints only `name repo [env] ok|missing|set`.
+
+- [ ] **Step 1:** write the tests with a fake `op` and `gh` on `PATH` (shell stubs in a temp dir that record argv and stdin).
+  - `test_value_goes_to_stdin_never_argv`: the recorded `gh` argv must not contain the value, and its stdin must equal it.
+  - `test_missing_ref_reported_and_exit_1`: `op` exits 1 for one ref; the output has `missing` and the exit code is 1.
+  - `test_env_and_variable_kinds`: they map to `gh secret set N --repo cheunjm/R --env E` and `gh variable set N --repo cheunjm/R`.
+- [ ] **Step 2:** run `python3 -m unittest scripts/test_sync_secrets.py`. Expected: FAIL (no module).
+- [ ] **Step 3:** implement the script.
+- [ ] **Step 4:** rerun. Expected: PASS.
+- [ ] **Step 5:** fill the manifest from the stage 2 inventory, standardized:
+  - `VERCEL_ORG_ID` and `VERCEL_PROJECT_ID` become `variable`s, the project ID per environment.
+  - `DOPPLER_TOKEN` is per environment.
+  - `LITELLM_API_KEY` goes to all 12 repos (D28).
+  - `SLACK_BOT_TOKEN` stays on all 12.
+
+  Old names stay in GitHub until their callers move (stages 3 and 4). There's no prune in this stage.
+- [ ] **Step 6:** run `python3 scripts/sync-secrets.py --dry-run`. Expected: every pair is `ok`. Any `missing` is listed for Jace, because 1Password needs those values and GitHub can't return them. This blocks the real sync only.
+- [ ] **Step 7:** commit, open the PR, and run the real sync after merge. `gh secret list` per repo shows the manifest names.
+
+### Task 6: ruleset script
+
+**Files:** create `scripts/apply-rulesets.py`, with tests in `scripts/test_apply_rulesets.py`.
+
+**Interfaces:**
+- **Consumes:** the manifest's `[repos.*]`.
+- **Produces:** `apply-rulesets.py [--dry-run] --repo R | --all`. It upserts a ruleset named `default-branch`:
+  - target `~DEFAULT_BRANCH`;
+  - a `required_status_checks` rule with `ci / gate`, `changeset / check` and the repo's `extra_checks`;
+  - bypass actor `RepositoryRole` 5 (admin) with `bypass_mode: always`.
+
+- [ ] **Step 1:** tests:
+  - `test_payload_has_gate_changeset_and_extras` (ui → also `e2e / web`);
+  - `test_upsert_uses_put_when_named_ruleset_exists` (fake `gh` returns an existing id).
+- [ ] **Step 2:** run them, expect FAIL, implement, run them, expect PASS.
+- [ ] **Step 3:** apply to `cheunjm/.github`. It is public, so rulesets work without Pro, and `self.yml` now emits `ci / gate`. Then open a test PR with a red `ci / lint` and confirm the merge button is blocked for a non-admin view (`gh pr view --json mergeStateStatus` shows `BLOCKED`).
+- [ ] **Step 4:** set `ruleset = false` for the other repos until each one's stage 3 PR merges.
+
+### Task 7: openwiki on `mac-studio-openwiki`
+
+**Files:** modify `.github/workflows/openwiki-update.yml`.
+- Change the defaults: `runner` to `mac-studio-openwiki`, `base_url` to `http://127.0.0.1:4001/v1`, `model_id` to `gpt-6.1-sol` (it was required, so it becomes optional) and `use_responses_api` to `true`.
+- Keep `vars.OPENWIKI_RUNNER` as the first choice until stage 5.
+
+**Runner setup (no PR):**
+- For the 9 tool repos: `gh api -X POST repos/cheunjm/<repo>/actions/runners/<id>/labels -f 'labels[]=mac-studio-openwiki'`.
+- Register `mac-studio-arami-openwiki`, `mac-studio-ui-openwiki` and `mac-studio-portfolio` (also labelled `mac-studio-openwiki`) with the conventions registration-token-over-stdin recipe.
+
+- [ ] **Step 1:** prove the current caller still works. Dispatch starlog's `openwiki-update.yml` pinned to the PR branch. Expected: it runs on `mac-studio-starlog-openwiki`, still chosen through `OPENWIKI_RUNNER`.
+- [ ] **Step 2:** do the runner setup. Expected: in every repo, `gh api repos/cheunjm/<repo>/actions/runners --jq '[.runners[].labels[].name]'` contains `mac-studio-openwiki`.
+- [ ] **Step 3:** update the `CLAUDE.md` row, add a `patch` changeset, commit and mark ready.
+
+### Stage 2 done
+
+The criteria from the stage goals:
+- `self.yml` is green across all three fixtures, plus the red and docs-only cases.
+- `v1` points at the first release.
+- The sync dry-run is all `ok`.
+
+And:
+- `release-candidate` dry-runs on `.github`.
+- `.github` has its ruleset.
+- Every repo has a `mac-studio-openwiki` runner.
