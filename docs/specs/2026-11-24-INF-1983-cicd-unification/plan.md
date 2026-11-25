@@ -493,8 +493,10 @@ And:
 
 ## Global constraints
 
-- **CI caller:** `.github/workflows/ci.yml`, `name: CI`, job id `ci`, triggered on `pull_request` (`opened, synchronize, reopened, ready_for_review`) and on `push` to `main`. It grants `contents: read`, plus `checks: write` only with `test_reports`. It uses `secrets: inherit`.
+- **CI caller:** `.github/workflows/ci.yml`, `name: Checks` (D35), job id `ci`, triggered on `pull_request` (`opened, synchronize, reopened, ready_for_review`) and on `push` to `main`. It grants `contents: read`, plus `checks: write` only with `test_reports`. It uses `secrets: inherit`.
 - **Pins:** every `cheunjm/.github/.github/workflows/*.yml@main` becomes `@v1`.
+- **Changeset caller:** `name: Release notes` (D35), job id `changeset`.
+- **Naming docs:** conventions `ci-check-naming.md` (Task 2) and the dotfiles `new-repo-bootstrap` skill switch to the `Checks` and `Release notes` workflow names.
 - **No `CI_RUNNER`:** `vars.CI_RUNNER` fallbacks are replaced with `ubuntu-latest` (D10). The exceptions stay: arami's pinned `eas / build`, starlog's `eas-build` Studio job, and engineering-log's `receive-entry` (one-off, D2).
 - **Branches:** `chore/INF-1983-ci-migration` with an empty changeset. Draft first, then ready once CI shows `ci / gate`.
 - **Never:** change app deploy workflows beyond `@v1` pins and `CI_RUNNER` (that is stage 4).
@@ -534,7 +536,7 @@ Recipe for each repo, in this order:
 - [ ] **Step 6:** `actionlint`, draft PR. Expected: `ci / gate` green, plus the slots in the table's "checks" column. The PR body lists before → after.
 - [ ] **Step 7:** mark ready, then Jace merges. After merge, the push run on `main` shows `ci / gate`.
 
-| # | Repo | `ci.yml` inputs (layout `single` unless noted) | Slots run inside `ci / checks` | Also |
+| # | Repo | `ci.yml` inputs | Slots run inside `ci / gate` | Also |
 |---|---|---|---|---|
 | 2 | conventions | `preset: shell` | lint | Mergify |
 | 3 | engineering-log | `preset: shell` | lint | Mergify |

@@ -371,3 +371,17 @@ D20–D23 came from the builder check on 2026-11-24.
 - **Chosen by:** human
 - **Impact:** med
 
+## D35: CI is one job; caller workflows are `Checks` and `Release notes`
+- **Refines:** D34.
+- **Problem:** GitHub shows a check from a reusable workflow as `<workflow> / <caller job> / <job>`. With the workflow named `CI` and the caller job `ci`, every check read `CI / ci / ...` (Jace: "two cis, not good"). The single layout also showed a separate `ci / plan` check (an extra billed minute) and a skipped `ci / matrix.slot` placeholder.
+- **Options:** A: `ci.yml` as one job named `gate`, matrix in its own file, caller workflows renamed; B: rename the caller job (required checks change everywhere); C: keep it.
+- **Choice:** A.
+  - `ci.yml` is one job, `gate`: it resolves, sets up, runs the slots in order and gates, so a normal PR shows only `Checks / ci / gate`.
+  - The per-slot layout moves to `ci-matrix.yml` (opt-in), and the `layout` input is dropped.
+  - Caller workflows are named `Checks` (was `CI`) and `Release notes` (was `Changeset`, shown as `Release notes / changeset / check`).
+  - The required checks stay `ci / gate` and `changeset / check`.
+- **Rationale:** One check, one billed minute, no repeated names. Rulesets, the manifest and the release button are untouched.
+- **Proposed by:** ai
+- **Chosen by:** human
+- **Impact:** low
+

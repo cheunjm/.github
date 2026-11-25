@@ -1,11 +1,10 @@
-name: CI
+name: Checks
 
-# This repo's own PR CI. It dogfoods the shared ci.yml: the `ci` job lints the
-# workflows, and the other jobs run ci.yml against the fixtures in fixtures/.
-# `node` runs `layout: matrix`, the others the default `single`. `red` proves
-# gate catches a failed slot inside `ci / checks` (red on purpose; `red / gate`
-# stays green). `docs-only` proves a PR whose files are
-# all ignored skips every slot and still passes gate.
+# This repo's own PR CI. It dogfoods the shared CI: the `ci` job lints the workflows,
+# and the others run it against the fixtures in fixtures/. `node` uses ci-matrix.yml (a
+# check per slot); the rest use ci.yml (one `gate` job). `red` proves the gate catches a
+# failed slot (expect_failure inverts it, so `red / gate` is green). `docs-only` proves
+# a PR whose files are all ignored runs nothing and still passes.
 
 on:
   pull_request:
@@ -25,10 +24,9 @@ jobs:
         "$(go env GOPATH)/bin/actionlint" -color -shellcheck=""
 
   node:
-    uses: ./.github/workflows/ci.yml
+    uses: ./.github/workflows/ci-matrix.yml
     with:
       preset: node
-      layout: matrix
       working_directory: fixtures/node
       paths_ignore: ""
 

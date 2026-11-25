@@ -4,10 +4,11 @@ name: Changeset
 # needs its own `.changeset/*.md`; docs/CI-only PRs add an empty one
 # (`npx changeset add --empty`). The Version Packages PR is exempt.
 #
-# Callers name their workflow `Changeset` and use a job id of `changeset`,
-# so the required check is `changeset / check`:
+# Callers name their workflow `Release notes` and use a job id of `changeset`,
+# so the required check is `changeset / check` (shown as
+# `Release notes / changeset / check`, INF-1983 D35):
 #
-#   name: Changeset
+#   name: Release notes
 #   on:
 #     pull_request:
 #       types: [opened, synchronize, reopened, ready_for_review]

@@ -1,0 +1,316 @@
+name: Checks
+
+# Shared CI, one job and check per slot (INF-1983, D35). Use ci.yml instead unless
+# a repo wants each slot as its own check: this variant bills a minute per job (plan,
+# up to six slots, gate) where ci.yml bills one. Inputs are the same as ci.yml.
+# With caller job id `ci` the checks are ci / plan, ci / lint ... ci / build and
+# ci / gate; `ci / gate` is the one a ruleset requires (failed or cancelled slots
+# fail it, skipped ones pass). Callers grant `contents: read`, plus `checks: write`
+# with `test_reports`.
+
+on:
+  workflow_call:
+    inputs:
+      preset:
+        description: "Default commands: node, python or shell"
+        type: string
+        required: true
+      runner:
+        description: "Runner label for every job"
+        type: string
+        required: false
+        default: "ubuntu-latest"
+      working_directory:
+        description: "Directory the install and slot commands run in"
+        type: string
+        required: false
+        default: "."
+      paths_ignore:
+        description: "Newline-separated globs; a PR touching only these files skips every slot"
+        type: string
+        required: false
+        default: |
+          *.md
+          **/*.md
+          .changeset/**
+          docs/**
+          openwiki/**
+      node_version:
+        type: string
+        required: false
+        default: "20"
+      python_version:
+        type: string
+        required: false
+        default: "3.12"
+      ruff_version:
+        type: string
+        required: false
+        default: "0.16.8"
+      mypy_version:
+        type: string
+        required: false
+        default: "1.19.1"
+      apt_packages:
+        description: "Space-separated apt packages installed before each slot (e.g. jq)"
+        type: string
+        required: false
+        default: ""
+      install_command:
+        description: "Override the preset install step. `none` skips it."
+        type: string
+        required: false
+        default: ""
+      lint_command:
+        type: string
+        required: false
+        default: ""
+      typecheck_command:
+        type: string
+        required: false
+        default: ""
+      test_command:
+        type: string
+        required: false
+        default: ""
+      format_command:
+        type: string
+        required: false
+        default: ""
+      audit_command:
+        type: string
+        required: false
+        default: ""
+      build_command:
+        type: string
+        required: false
+        default: ""
+      registry_scope:
+        description: "npm scope read from GitHub Packages (e.g. @cheunjm). Needs PKG_READ_TOKEN."
+        type: string
+        required: false
+        default: ""
+      test_reports:
+        description: "Upload JUnit results and publish a test report (jest-junit; caller grants checks: write)"
+        type: boolean
+        required: false
+        default: false
+      codecov:
+        description: "Send coverage to Codecov after the tests. Needs CODECOV_TOKEN."
+        type: boolean
+        required: false
+        default: false
+      codecov_directory:
+        type: string
+        required: false
+        default: ""
+      codecov_flags:
+        type: string
+        required: false
+        default: ""
+      turbo_team:
+        description: "Turborepo remote cache team. Pair with TURBO_TOKEN."
+        type: string
+        required: false
+        default: ""
+      expect_failure:
+        description: "Self-test only: gate passes only if a slot failed"
+        type: boolean
+        required: false
+        default: false
+    secrets:
+      PKG_READ_TOKEN:
+        required: false
+      CODECOV_TOKEN:
+        required: false
+      TURBO_TOKEN:
+        required: false
+
+jobs:
+  plan:
+    name: plan
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 5
+    outputs:
+      slots: ${{ steps.resolve.outputs.slots }}
+      has_test: ${{ steps.resolve.outputs.has_test }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Resolve slots
+        id: resolve
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PRESET: ${{ inputs.preset }}
+          PATHS_IGNORE: ${{ inputs.paths_ignore }}
+          INSTALL: ${{ inputs.install_command }}
+          LINT: ${{ inputs.lint_command }}
+          TYPECHECK: ${{ inputs.typecheck_command }}
+          TEST: ${{ inputs.test_command }}
+          FORMAT: ${{ inputs.format_command }}
+          AUDIT: ${{ inputs.audit_command }}
+          BUILD: ${{ inputs.build_command }}
+        run: |
+          python3 - <<'PY'
+          import fnmatch, json, os, subprocess, sys
+
+          e = os.environ
+          presets = {
+              "node": {
+                  "install": "npm ci",
+                  "lint": "npm run lint",
+                  "typecheck": "npm run typecheck",
+                  "test": "npm run test",
+                  "format": "npm run format:check",
+                  "audit": "npm audit --audit-level=critical --omit=dev",
+              },
+              "python": {
+                  "install": 'python3 -m pip install "ruff==$RUFF_VERSION" "mypy==$MYPY_VERSION"'
+                             ' && if [ -f requirements.txt ]; then python3 -m pip install -r requirements.txt; fi',
+                  "lint": "ruff check .",
+                  "test": 'python3 -m unittest discover -s . -p "test_*.py" -v',
+                  "format": "ruff format --check .",
+              },
+              "shell": {
+                  "lint": "git ls-files -z '*.sh' | xargs -0 -r shellcheck -S warning",
+              },
+          }
+          preset = e["PRESET"]
+          if preset not in presets:
+              sys.exit(f"::error::unknown preset {preset!r} (node, python, shell)")
+          defaults = presets[preset]
+
+          def effective(key, override):
+              if override.strip() == "none":
+                  return ""
+              return override.strip() or defaults.get(key, "")
+
+          run = True
+          ignore = [g.strip() for g in e["PATHS_IGNORE"].splitlines() if g.strip()]
+          if e["EVENT"] == "pull_request" and ignore:
+              diff = subprocess.run(
+                  ["git", "diff", "--name-only", f"{e['BASE_SHA']}...HEAD"],
+                  check=True, capture_output=True, text=True,
+              ).stdout.split()
+              run = any(not any(fnmatch.fnmatch(f, g) for g in ignore) for f in diff)
+              print(f"{len(diff)} changed files; slots {'run' if run else 'skipped (all ignored)'}")
+
+          install = effective("install", e["INSTALL"])
+          slots = []
+          if run:
+              for slot in ["lint", "typecheck", "test", "format", "audit", "build"]:
+                  cmd = effective(slot, e[slot.upper()])
+                  if cmd:
+                      slots.append({"slot": slot, "cmd": cmd, "install": install})
+          print("slots:", [s["slot"] for s in slots])
+          with open(e["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"slots={json.dumps(slots)}\n")
+              out.write(f"has_test={'true' if any(s['slot'] == 'test' for s in slots) else 'false'}\n")
+          PY
+
+  slot:
+    name: ${{ matrix.slot }}
+    needs: plan
+    if: ${{ needs.plan.outputs.slots != '[]' }}
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.slots) }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install apt packages
+        if: ${{ inputs.apt_packages != '' }}
+        env:
+          PACKAGES: ${{ inputs.apt_packages }}
+        run: |
+          sudo apt-get update -qq
+          # shellcheck disable=SC2086 # word splitting is the point
+          sudo apt-get install -y -qq $PACKAGES
+      - uses: actions/setup-node@v7
+        if: ${{ inputs.preset == 'node' }}
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: npm
+          cache-dependency-path: ${{ inputs.working_directory }}/package-lock.json
+          registry-url: ${{ inputs.registry_scope != '' && 'https://npm.pkg.github.com' || '' }}
+          scope: ${{ inputs.registry_scope }}
+      - uses: actions/setup-python@v7
+        if: ${{ inputs.preset == 'python' }}
+        with:
+          python-version: ${{ inputs.python_version }}
+      - name: Install
+        if: ${{ matrix.install != '' }}
+        env:
+          CMD: ${{ matrix.install }}
+          NODE_AUTH_TOKEN: ${{ secrets.PKG_READ_TOKEN }}
+          RUFF_VERSION: ${{ inputs.ruff_version }}
+          MYPY_VERSION: ${{ inputs.mypy_version }}
+        run: bash -euo pipefail -c "$CMD"
+      - name: Run ${{ matrix.slot }}
+        env:
+          CMD: ${{ matrix.cmd }}
+          TURBO_TOKEN: ${{ inputs.turbo_team != '' && secrets.TURBO_TOKEN || '' }}
+          TURBO_TEAM: ${{ inputs.turbo_team }}
+          JEST_JUNIT_OUTPUT_DIR: ${{ matrix.slot == 'test' && inputs.test_reports && 'test-results' || '' }}
+          JEST_JUNIT_OUTPUT_NAME: ${{ matrix.slot == 'test' && inputs.test_reports && 'junit.xml' || '' }}
+        run: bash -euo pipefail -c "$CMD"
+      - name: Upload test results
+        if: ${{ always() && matrix.slot == 'test' && inputs.test_reports }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results
+          path: "**/test-results/"
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Test report
+        if: ${{ always() && matrix.slot == 'test' && inputs.test_reports }}
+        uses: dorny/test-reporter@d1b5dff021aa968b288b02285a8bf47471c5928a # v3
+        with:
+          name: Unit Tests
+          path: "**/test-results/*.xml"
+          reporter: jest-junit
+          fail-on-empty: false
+      - name: Upload coverage to Codecov
+        if: ${{ always() && matrix.slot == 'test' && inputs.codecov }}
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          directory: ${{ inputs.codecov_directory }}
+          flags: ${{ inputs.codecov_flags }}
+          fail_ci_if_error: false
+      - name: Upload coverage artifact
+        if: ${{ always() && matrix.slot == 'test' && inputs.codecov && inputs.codecov_directory != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage
+          path: ${{ inputs.working_directory }}/${{ inputs.codecov_directory }}/
+          if-no-files-found: ignore
+
+  gate:
+    name: gate
+    needs: [plan, slot]
+    if: ${{ always() }}
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 5
+    steps:
+      - name: Check slots
+        env:
+          RESULTS: ${{ toJSON(needs.*.result) }}
+          EXPECT_FAILURE: ${{ inputs.expect_failure }}
+        run: |
+          # A failed or cancelled job fails the gate; skipped jobs pass.
+          failed=false
+          if echo "$RESULTS" | grep -qE '"failure"|"cancelled"'; then failed=true; fi
+          if [ "$EXPECT_FAILURE" = "true" ]; then
+            if [ "$failed" = "true" ]; then echo "A slot failed, as expected"; exit 0; fi
+            echo "::error::expect_failure is set but no slot failed"; exit 1
+          fi
+          if [ "$failed" = "true" ]; then echo "::error::One or more CI jobs failed or were cancelled"; exit 1; fi
+          echo "All CI jobs passed or were skipped"
