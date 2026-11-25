@@ -1,5 +1,8 @@
 name: CI
 
+# DEPRECATED: use ci.yml with `preset: node` (INF-1983, D5, D30.1). Kept
+# unchanged so existing callers keep their check names; removed in v2.
+#
 # Shared CI for npm projects: lint, typecheck, test, format, audit, build, and one
 # `gate` job that is the only CI check a repo needs to require.
 #
