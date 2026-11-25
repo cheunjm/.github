@@ -1,0 +1,204 @@
+name: Release candidate
+
+# The release button (INF-1983, D26/D27). Run it from a repo's thin
+# `workflow_dispatch` caller to cut a prerelease of `main`:
+#
+#   1. refuses while the repo is in changesets pre mode (.changeset/pre.json);
+#   2. refuses unless `ci / gate` passed on the commit being tagged;
+#   3. version X.Y.Z = what the pending changesets would release
+#      (`changeset status`), or the next patch when there are none;
+#   4. N = 1 + the highest existing vX.Y.Z-<channel>.N tag, or 0;
+#   5. creates the tag vX.Y.Z-<channel>.N with the arami-bot token (so the tag
+#      push triggers the repo's cd workflow, which deploys develop) and a
+#      GitHub prerelease;
+#   6. with `publish: true`, publishes X.Y.Z-<channel>.N to the npm registry
+#      under the dist-tag <channel>. The version is set in CI only and never
+#      committed.
+#
+# Only an `rc` can ship to master; a `next` is a develop build that cannot be
+# released by accident. `dry_run` resolves and prints the tag, creating nothing.
+#
+#   name: Release candidate
+#   on:
+#     workflow_dispatch:
+#       inputs:
+#         channel:
+#           type: choice
+#           options: [rc, next]
+#           default: rc
+#   permissions:
+#     contents: read
+#   jobs:
+#     cut:
+#       uses: cheunjm/.github/.github/workflows/release-candidate.yml@v1
+#       permissions:
+#         contents: write
+#         checks: read
+#         packages: write   # only with publish: true
+#       secrets: inherit
+#       with:
+#         channel: ${{ inputs.channel }}
+
+on:
+  workflow_call:
+    inputs:
+      channel:
+        description: "Prerelease channel: rc (default, can ship to master) or next"
+        type: string
+        required: false
+        default: "rc"
+      publish:
+        description: "Also publish the prerelease to the npm registry under the dist-tag <channel>"
+        type: boolean
+        required: false
+        default: false
+      install_command:
+        description: "Install step before publishing (only with publish: true)"
+        type: string
+        required: false
+        default: "npm ci"
+      registry_url:
+        description: "npm registry for publishing (e.g. https://npm.pkg.github.com)"
+        type: string
+        required: false
+        default: ""
+      scope:
+        description: "npm scope for the registry (e.g. @cheunjm)"
+        type: string
+        required: false
+        default: ""
+      node_version:
+        type: string
+        required: false
+        default: "22"
+      changesets_version:
+        description: "Pinned @changesets/cli version used to read pending changesets"
+        type: string
+        required: false
+        default: "3.0.3"
+      dry_run:
+        description: "Resolve and print the tag without creating anything"
+        type: boolean
+        required: false
+        default: false
+      runner:
+        type: string
+        required: false
+        default: "ubuntu-latest"
+    secrets:
+      BOT_APP_ID:
+        required: false
+      BOT_PRIVATE_KEY:
+        required: false
+    outputs:
+      tag:
+        description: "The tag cut (or that would be cut, in a dry run), e.g. v1.4.0-rc.0"
+        value: ${{ jobs.cut.outputs.tag }}
+      version:
+        description: "The prerelease version, e.g. 1.4.0-rc.0"
+        value: ${{ jobs.cut.outputs.version }}
+
+jobs:
+  cut:
+    name: cut
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 15
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ inputs.node_version }}
+          registry-url: ${{ inputs.registry_url }}
+          scope: ${{ inputs.scope }}
+
+      - name: Check the repo can cut a prerelease
+        env:
+          CHANNEL: ${{ inputs.channel }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          case "$CHANNEL" in
+            rc|next) ;;
+            *) echo "::error::channel must be rc or next, got '$CHANNEL'"; exit 1 ;;
+          esac
+          if [ -f .changeset/pre.json ]; then
+            echo "::error::repo is in changesets pre mode (.changeset/pre.json); leave pre mode before using the release button"
+            exit 1
+          fi
+          gate=$(gh api "repos/$REPO/commits/$SHA/check-runs?check_name=ci%20%2F%20gate" \
+            --jq '[.check_runs[] | .conclusion] | if index("success") then "success" else (.[0] // "missing") end')
+          if [ "$gate" != "success" ]; then
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "::warning::ci / gate is not green on $SHA ($gate); a real run would stop here"
+            else
+              echo "::error::ci / gate is not green on $SHA ($gate)"
+              exit 1
+            fi
+          fi
+
+      - name: Resolve the next prerelease
+        id: resolve
+        env:
+          CHANNEL: ${{ inputs.channel }}
+          CLI_VERSION: ${{ inputs.changesets_version }}
+        run: |
+          npx -y "@changesets/cli@$CLI_VERSION" status --output="$RUNNER_TEMP/status.json" >/dev/null
+          # shellcheck disable=SC2016 # a JS template literal, not shell
+          base=$(node -e '
+            const s = require(process.argv[1]);
+            const rels = (s.releases || []).filter(r => r.type !== "none");
+            if (rels.length > 1) { console.error("multi-package repos are not supported"); process.exit(1); }
+            if (rels.length === 1) { console.log(rels[0].newVersion); process.exit(0); }
+            const v = require(process.cwd() + "/package.json").version.split("-")[0].split(".").map(Number);
+            console.log(`${v[0]}.${v[1]}.${v[2] + 1}`);
+          ' "$RUNNER_TEMP/status.json")
+          base="${base%%-*}"
+          highest=$(git ls-remote --tags origin "refs/tags/v$base-$CHANNEL.*" \
+            | sed -E 's#.*refs/tags/v[^-]+-[a-z]+\.([0-9]+)(\^\{\})?$#\1#' | sort -n | tail -1)
+          n=$(( ${highest:--1} + 1 ))
+          version="$base-$CHANNEL.$n"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "Next prerelease: v$version"
+          echo "### Release candidate: \`v$version\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Generate GitHub App token
+        if: ${{ !inputs.dry_run }}
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+
+      - name: Create the tag and prerelease
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          TAG: ${{ steps.resolve.outputs.tag }}
+        run: |
+          # The refs API returns 422 when the tag already exists (a concurrent
+          # press): fail instead of moving it.
+          gh api -X POST "repos/$REPO/git/refs" -f ref="refs/tags/$TAG" -f sha="$SHA" >/dev/null
+          gh release create "$TAG" --repo "$REPO" --prerelease --generate-notes --verify-tag
+
+      - name: Publish the prerelease
+        if: ${{ !inputs.dry_run && inputs.publish }}
+        env:
+          INSTALL: ${{ inputs.install_command }}
+          VERSION: ${{ steps.resolve.outputs.version }}
+          CHANNEL: ${{ inputs.channel }}
+          NODE_AUTH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -n "$INSTALL" ]; then bash -euo pipefail -c "$INSTALL"; fi
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+          npm publish --tag "$CHANNEL"
