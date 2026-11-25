@@ -222,9 +222,19 @@ jobs:
           SHA: ${{ github.sha }}
           TAG: ${{ steps.resolve.outputs.tag }}
         run: |
-          # The refs API returns 422 when the tag already exists (a concurrent
-          # press): fail instead of moving it.
-          gh api -X POST "repos/$REPO/git/refs" -f ref="refs/tags/$TAG" -f sha="$SHA" >/dev/null
+          # A git push, not the refs API (which answers 403 for the App when the
+          # commit carries workflow files). Without --force the push fails if the
+          # tag already exists (a concurrent press) instead of moving it. The
+          # credential lives in .git/config only for this push, before any
+          # install or publish step runs.
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+          echo "::add-mask::$auth"
+          git config --local http.https://github.com/.extraheader "AUTHORIZATION: basic $auth"
+          git tag "$TAG" "$SHA"
+          status=0
+          git push origin "refs/tags/$TAG" || status=$?
+          git config --local --unset-all http.https://github.com/.extraheader
+          [ "$status" -eq 0 ] || { echo "::error::could not push $TAG (it may already exist)"; exit "$status"; }
           gh release create "$TAG" --repo "$REPO" --prerelease --generate-notes --verify-tag
 
       - name: Install and build for publishing

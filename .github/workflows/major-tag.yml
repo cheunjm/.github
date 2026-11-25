@@ -33,7 +33,14 @@ jobs:
         with:
           app-id: ${{ secrets.BOT_APP_ID }}
           private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
       - name: Point the major tag at this release
+        # A git push, not the refs API: the App may push tags with git (as
+        # changesets does for the release tag), but the API answers 403 when the
+        # commit carries workflow files.
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ github.repository }}
@@ -45,13 +52,7 @@ jobs:
           fi
           major="v${BASH_REMATCH[1]}"
           # The commit the release tag points at (annotated tags are dereferenced).
-          SHA=$(gh api "repos/$REPO/commits/$TAG" --jq .sha)
-          # git/ref/ (singular) matches exactly; git/refs/ falls back to a prefix
-          # match, so it would "find" v1.0.0 when v1 does not exist yet.
-          if gh api "repos/$REPO/git/ref/tags/$major" >/dev/null 2>&1; then
-            gh api -X PATCH "repos/$REPO/git/refs/tags/$major" -f sha="$SHA" -F force=true >/dev/null
-            echo "Moved $major to $TAG ($SHA)"
-          else
-            gh api -X POST "repos/$REPO/git/refs" -f ref="refs/tags/$major" -f sha="$SHA" >/dev/null
-            echo "Created $major at $TAG ($SHA)"
-          fi
+          SHA=$(git rev-parse "refs/tags/$TAG^{commit}")
+          git tag -f "$major" "$SHA"
+          git push --force origin "refs/tags/$major"
+          echo "Pointed $major at $TAG ($SHA)"
