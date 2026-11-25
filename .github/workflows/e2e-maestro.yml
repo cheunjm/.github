@@ -153,16 +153,16 @@ jobs:
           registry-url: ${{ inputs.registry-scope != '' && 'https://npm.pkg.github.com' || '' }}
           scope: ${{ inputs.registry-scope }}
 
-      - uses: actions/setup-java@v5
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: 17
 
-      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
         with:
           cache-read-only: false
 
-      - uses: supabase/setup-cli@1dedf2c611547ede7232d26866dd3c56ab903bbb # v1
+      - uses: supabase/setup-cli@689adcfb80d947100a1eab127289b97d1fb07b13 # v1
         if: inputs.supabase-cli
         with:
           version: ${{ inputs.supabase-version }}
@@ -349,7 +349,7 @@ jobs:
           registry-url: ${{ inputs.registry-scope != '' && 'https://npm.pkg.github.com' || '' }}
           scope: ${{ inputs.registry-scope }}
 
-      - uses: supabase/setup-cli@1dedf2c611547ede7232d26866dd3c56ab903bbb # v1
+      - uses: supabase/setup-cli@689adcfb80d947100a1eab127289b97d1fb07b13 # v1
         if: inputs.supabase-cli
         with:
           version: ${{ inputs.supabase-version }}
@@ -486,7 +486,7 @@ jobs:
           registry-url: ${{ inputs.registry-scope != '' && 'https://npm.pkg.github.com' || '' }}
           scope: ${{ inputs.registry-scope }}
 
-      - uses: supabase/setup-cli@1dedf2c611547ede7232d26866dd3c56ab903bbb # v1
+      - uses: supabase/setup-cli@689adcfb80d947100a1eab127289b97d1fb07b13 # v1
         if: inputs.supabase-cli
         with:
           version: ${{ inputs.supabase-version }}
