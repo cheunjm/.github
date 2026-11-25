@@ -91,7 +91,7 @@ Each stage is one PR per repo it touches. In `.github`, a stage may be a small s
    - adds an `openwiki-update.yml` caller (D28);
    - removes `.mergify.yml`.
 
-   After merge, apply that repo's ruleset, once Pro is active. Done when every repo reports `ci / gate` on a PR, has no `@main` reference to `.github`, and its ruleset blocks a merge while `ci / gate` is red.
+   Before any repo gets its ruleset, `openwiki-update` must open its PRs with the arami-bot App token and drop `[skip ci]`; otherwise `ci / gate` never reports on wiki PRs and they wait forever (D31.3). After merge, apply that repo's ruleset, once Pro is active. Done when every repo reports `ci / gate` on a PR, has no `@main` reference to `.github`, and its ruleset blocks a merge while `ci / gate` is red.
 4. **CD.**
    - **Spike first:** check whether `eas build --local` plus `eas upload` records the fingerprint in EAS. If not, the fingerprint lookup uses GitHub deployment records (D22.6).
    - **`.github`:** build `cd` and its internal blocks, add the `dry_run` fixture job, and port `e2e-maestro` Android to macOS.

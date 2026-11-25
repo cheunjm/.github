@@ -319,3 +319,19 @@ D20–D23 came from the builder check on 2026-11-24.
 - **Proposed by:** ai
 - **Chosen by:** ai
 - **Impact:** low
+
+## D31: Stage 2 review findings settled by the AI
+- **Problem:** The final review of the stage 2 PRs found gaps the plan did not cover.
+- **Options:** n/a.
+- **Choice:**
+  1. **The release button lives in each repo's `release.yml`**, as a `workflow_dispatch` path next to the push-triggered Version PR job. npm trusted publishing matches the caller's workflow file, and ui's trusted publisher is `release.yml`. `release-candidate.yml` gains `trusted_publishing`.
+  2. **openwiki's `publish` job runs on `ubuntu-latest` by default**, including for starlog, which used to publish on the Studio. The job holds the write token and needs no model, so it should not share a persistent runner with the agent. This is a deliberate hardening.
+  3. **openwiki PRs and rulesets:** wiki PRs are opened with `github.token` and merged with `[skip ci]`, so `ci / gate` never reports on them. Stage 3 switches openwiki to the App token without `[skip ci]` before applying any ruleset.
+  4. **CI callers also run on push to the default branch**, because the button needs `ci / gate` on that branch's HEAD.
+  5. **The button allows a repo exiting pre mode** (`pre.json` mode `exit`) and computes versions like `semver.inc`, so ui can cut rcs of `1.0.0` while its stable Version PR is held.
+  6. **Node 20 stays the `ci.yml` default** for parity with `ci-node`, even though Node 20 is past end of life. Moving to 22 is a per-repo change in stage 3, not a silent default change.
+- **Rationale:** Each closes a review finding with the smallest change that keeps current callers working.
+- **Proposed by:** ai
+- **Chosen by:** ai
+- **Impact:** low
+
