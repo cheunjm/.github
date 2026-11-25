@@ -18,14 +18,14 @@ name: Wiki
 # Two jobs, so the agent never shares a job with a write token: `generate` runs the agent
 # with a read-only token and uploads openwiki/ as an artifact; `publish` validates and copies
 # in only allowlisted regular files, then guards, scans, opens the PR and merges.
-# Both run on `runner`, default `mac-studio-openwiki` (INF-1983, D28): every repo has a Studio
+# `generate` runs on `runner`, default `mac-studio-openwiki` (INF-1983, D28): every repo has a Studio
 # runner with that label that does no mobile work, so a long generation never queues behind or
 # blocks an EAS build or native e2e. The model is the Studio's LiteLLM (:4001, the ChatGPT
 # subscription), so callers pass nothing. The repo variable OPENWIKI_RUNNER still overrides the
-# runner until v2, and `publish_runner` overrides the publish job. Tradeoff: a
-# self-hosted runner is persistent, so `publish` wipes its workspace (planted .git hooks or
-# config) before a fresh checkout, but it cannot stop a process the agent left running on the
-# same machine. Set publish_runner: ubuntu-latest for full isolation.
+# `generate` runner until v2. `publish`, which holds the write token, runs on `ubuntu-latest`
+# unless `publish_runner` says otherwise: a persistent self-hosted runner could leave a process
+# the agent started running next to it. On a self-hosted publish runner the job still wipes its
+# workspace (planted .git hooks or config) before a fresh checkout.
 #
 # Caller secrets (pass with `secrets: inherit`):
 #   LITELLM_API_KEY   key for the OpenAI-compatible endpoint
@@ -41,7 +41,7 @@ on:
         type: string
         default: "mac-studio-openwiki"
       publish_runner:
-        description: "Runner for the publish job (default: same as runner)"
+        description: "Runner for the publish job (default: ubuntu-latest, isolated from the agent)"
         required: false
         type: string
         default: ""
@@ -169,7 +169,9 @@ jobs:
     name: publish
     needs: generate
     if: ${{ !cancelled() }}
-    runs-on: ${{ inputs.publish_runner || vars.OPENWIKI_RUNNER || inputs.runner }}
+    # Hosted by default: this job holds the write token and needs no model, so it never
+    # shares the persistent Studio runner with the agent.
+    runs-on: ${{ inputs.publish_runner || 'ubuntu-latest' }}
     timeout-minutes: 30
     permissions:
       contents: write
