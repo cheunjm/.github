@@ -59,7 +59,7 @@ def payload(extra_checks: list[str]) -> dict:
 def gh_api(args: list[str], body: dict | None = None) -> str:
     result = subprocess.run(
         ["gh", "api", *args],
-        input=json.dumps(body) if body is not None else None,
+        input=json.dumps(body) if body is not None else "",
         capture_output=True,
         text=True,
     )
