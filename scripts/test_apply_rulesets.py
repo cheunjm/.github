@@ -67,6 +67,21 @@ class ApplyRulesetsTest(unittest.TestCase):
             return []
         return [json.loads(line) for line in self.log.read_text().splitlines()]
 
+    def ruleset_writes(self) -> list[dict]:
+        return [
+            c for c in self.calls() if "-X" in c["argv"] and "rulesets" in c["argv"][3]
+        ]
+
+    def test_enables_auto_merge(self) -> None:
+        # openwiki-update.yml falls back to `gh pr merge --auto` once a ruleset
+        # refuses its direct merge, which fails unless the repo allows auto-merge.
+        result = self.run_apply("--repo", "ui")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        patch = ["api", "-X", "PATCH", "repos/cheunjm/ui"]
+        patches = [c for c in self.calls() if c["argv"][:4] == patch]
+        self.assertEqual(len(patches), 1)
+        self.assertEqual(json.loads(patches[0]["stdin"]), {"allow_auto_merge": True})
+
     def test_payload_has_gate_changeset_and_extras(self) -> None:
         result = self.run_apply("--repo", "ui", "--dry-run")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -90,7 +105,7 @@ class ApplyRulesetsTest(unittest.TestCase):
     def test_creates_with_post_when_missing(self) -> None:
         result = self.run_apply("--repo", "ui")
         self.assertEqual(result.returncode, 0, result.stderr)
-        writes = [c for c in self.calls() if "-X" in c["argv"]]
+        writes = self.ruleset_writes()
         self.assertEqual(len(writes), 1)
         self.assertEqual(
             writes[0]["argv"][:4], ["api", "-X", "POST", "repos/cheunjm/ui/rulesets"]
@@ -103,7 +118,7 @@ class ApplyRulesetsTest(unittest.TestCase):
         )
         result = self.run_apply("--repo", "ui", rulesets=existing)
         self.assertEqual(result.returncode, 0, result.stderr)
-        writes = [c for c in self.calls() if "-X" in c["argv"]]
+        writes = self.ruleset_writes()
         self.assertEqual(
             [w["argv"][:4] for w in writes],
             [["api", "-X", "PUT", "repos/cheunjm/ui/rulesets/42"]],

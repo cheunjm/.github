@@ -5,7 +5,8 @@ Reads `[repos.<name>]` from secrets.manifest.toml. The ruleset, named
 `default-branch`, requires `ci / gate`, `changeset / check` and the repo's
 `extra_checks`, each pinned to the GitHub Actions app so another app cannot
 satisfy them. Repository admins can bypass it (D22.5). An existing ruleset of
-that name is updated in place.
+that name is updated in place. It also turns on "Allow auto-merge", which the
+openwiki merge falls back to once the ruleset refuses a direct merge.
 
     python3 scripts/apply-rulesets.py --repo ui --dry-run   # print the payload
     python3 scripts/apply-rulesets.py --repo ui
@@ -69,6 +70,12 @@ def gh_api(args: list[str], body: dict | None = None) -> str:
 
 
 def apply(owner: str, repo: str, body: dict) -> str:
+    # openwiki-update.yml falls back to `gh pr merge --auto` once the ruleset
+    # refuses its direct merge; that needs "Allow auto-merge" on the repo.
+    gh_api(
+        ["-X", "PATCH", f"repos/{owner}/{repo}", "--input", "-"],
+        {"allow_auto_merge": True},
+    )
     existing = json.loads(gh_api([f"repos/{owner}/{repo}/rulesets"]) or "[]")
     match = next((r for r in existing if r.get("name") == RULESET_NAME), None)
     if match:
