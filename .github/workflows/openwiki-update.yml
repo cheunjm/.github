@@ -269,7 +269,8 @@ jobs:
           echo "ok=true" >> "$GITHUB_OUTPUT"
 
       - name: Add empty changeset
-        if: ${{ inputs.changeset && !inputs.init && steps.stage.outputs.ok == 'true' }}
+        # Init PRs too: they are reviewed by hand but still need `changeset / check`.
+        if: ${{ inputs.changeset && steps.stage.outputs.ok == 'true' }}
         run: |
           set -euo pipefail
           if [ -n "$(git status --porcelain -- openwiki)" ]; then
