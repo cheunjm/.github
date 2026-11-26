@@ -130,6 +130,20 @@ jobs:
           npm install --prefix "$RUNNER_TEMP/openwiki" "openwiki@${OPENWIKI_VERSION}" mermaid@11.16.0 jsdom@29.1.1
           echo "$RUNNER_TEMP/openwiki/node_modules/.bin" >> "$GITHUB_PATH"
 
+      # A repo whose CLAUDE.md is a symlink to AGENTS.md (or the reverse) would get the
+      # marker block written twice into one file, which OpenWiki then rejects as
+      # duplicated markers. Remove the link so only the real file is updated; staging
+      # skips paths git tracks as symlinks, so the link itself never changes.
+      - name: Set aside symlinked agent files
+        run: |
+          set -euo pipefail
+          for f in AGENTS.md CLAUDE.md; do
+            if [ -L "$f" ]; then
+              echo "$f is a symlink; OpenWiki updates its target only."
+              rm -- "$f"
+            fi
+          done
+
       - name: Run OpenWiki
         id: openwiki
         continue-on-error: true
@@ -157,6 +171,8 @@ jobs:
           fi
           if [ "$IS_INIT" = "true" ]; then
             for f in AGENTS.md CLAUDE.md; do
+              # Mode 120000: git tracks it as a symlink; its target carries the content.
+              if git ls-files -s -- "$f" | grep -q '^120000 '; then continue; fi
               if [ -f "$f" ]; then cp "$f" "$stage/$f"; fi
             done
           fi
