@@ -1,5 +1,11 @@
 # .github
 
+## 1.1.2
+
+### Patch Changes
+
+- [#148](https://github.com/cheunjm/.github/pull/148) [`9d3726b`](https://github.com/cheunjm/.github/commit/9d3726bd819649a64d7dd3a0f3aef46613aaeff8) Thanks [@cheunjm](https://github.com/cheunjm)! - `openwiki-update.yml`: init PRs also carry the empty changeset, so `changeset / check` passes on them.
+
 ## 1.1.1
 
 ### Patch Changes
