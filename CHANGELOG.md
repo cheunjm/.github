@@ -1,5 +1,11 @@
 # .github
 
+## 1.1.1
+
+### Patch Changes
+
+- [#146](https://github.com/cheunjm/.github/pull/146) [`4f7fe4e`](https://github.com/cheunjm/.github/commit/4f7fe4e8922a20987bc0cb92196693f8dbaab7a1) Thanks [@cheunjm](https://github.com/cheunjm)! - `openwiki-update.yml`: a repo whose `CLAUDE.md` is a symlink to `AGENTS.md` no longer fails with duplicated OpenWiki markers; only the link target is updated.
+
 ## 1.1.0
 
 ### Minor Changes
