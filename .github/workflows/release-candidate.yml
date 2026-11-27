@@ -1,54 +1,45 @@
 name: Release candidate
 
-# The release button (INF-1983, D26/D27). Run it from a repo's thin
-# `workflow_dispatch` caller to cut a prerelease of `main`:
+# The release button (INF-1983, D46). Run it from a repo's thin
+# `workflow_dispatch` caller to release `main` to develop. It creates no tag and
+# no GitHub prerelease; it only checks and computes, and the caller's cd deploys
+# the output `ref`:
 #
-#   1. refuses while the repo is in changesets pre mode (.changeset/pre.json);
-#   2. refuses unless `ci / gate` passed on the commit being tagged;
-#   3. version X.Y.Z = package.json's version bumped by the highest pending
+#   1. refuses unless it runs on the default branch;
+#   2. refuses while the repo is in changesets pre mode (.changeset/pre.json);
+#   3. refuses unless `ci / gate` passed on the commit being released;
+#   4. version X.Y.Z = package.json's version bumped by the highest pending
 #      changeset for this package, or the next patch when none is pending;
-#   4. N = 1 + the highest existing vX.Y.Z-<channel>.N tag, or 0;
-#   5. creates the tag vX.Y.Z-<channel>.N with the arami-bot token (so the tag
-#      push triggers the repo's cd workflow, which deploys develop) and a
-#      GitHub prerelease;
-#   6. with `publish: true`, publishes X.Y.Z-<channel>.N to the npm registry
-#      under the dist-tag <channel>. The version is set in CI only and never
-#      committed.
+#   5. outputs `version` (X.Y.Z) and `ref` (the SHA to deploy);
+#   6. with `publish: true`, publishes X.Y.Z-next.N to the npm registry under
+#      the dist-tag `next`, N = 1 + the highest X.Y.Z-next.* already on the
+#      registry (0 when none). The version is set in CI only, never committed.
 #
-# Only an `rc` can ship to master; a `next` is a develop build that cannot be
-# released by accident. `dry_run` resolves and prints the tag, creating nothing.
+# `dry_run` prints what it would do and changes nothing.
 #
 #   name: Release candidate
 #   on:
 #     workflow_dispatch:
-#       inputs:
-#         channel:
-#           type: choice
-#           options: [rc, next]
-#           default: rc
 #   permissions:
 #     contents: read
 #   jobs:
 #     cut:
 #       uses: cheunjm/.github/.github/workflows/release-candidate.yml@v1
 #       permissions:
-#         contents: write
+#         contents: read
 #         checks: read
 #         packages: write   # only with publish: true
-#       secrets: inherit
-#       with:
-#         channel: ${{ inputs.channel }}
 
 on:
   workflow_call:
     inputs:
       channel:
-        description: "Prerelease channel: rc (default, can ship to master) or next"
+        description: "Deprecated and ignored (D46): there are no rc tags. With publish, the npm dist-tag is always next"
         type: string
         required: false
         default: "rc"
       publish:
-        description: "Also publish the prerelease to the npm registry under the dist-tag <channel>"
+        description: "Also publish X.Y.Z-next.N to the npm registry under the dist-tag next"
         type: boolean
         required: false
         default: false
@@ -77,7 +68,7 @@ on:
         required: false
         default: "22"
       dry_run:
-        description: "Resolve and print the tag without creating anything"
+        description: "Print the version, ref and (with publish) the npm version without publishing anything"
         type: boolean
         required: false
         default: false
@@ -87,16 +78,21 @@ on:
         default: "ubuntu-latest"
     secrets:
       BOT_APP_ID:
+        description: "Deprecated and unused (no tag is pushed any more); kept so callers with secrets: inherit or explicit secrets still validate"
         required: false
       BOT_PRIVATE_KEY:
+        description: "Deprecated and unused; see BOT_APP_ID"
         required: false
     outputs:
       tag:
-        description: "The tag cut (or that would be cut, in a dry run), e.g. v1.4.0-rc.0"
+        description: "Always empty; kept for callers until v2"
         value: ${{ jobs.cut.outputs.tag }}
       version:
-        description: "The prerelease version, e.g. 1.4.0-rc.0"
+        description: "The version X.Y.Z the develop build carries, e.g. 1.4.0"
         value: ${{ jobs.cut.outputs.version }}
+      ref:
+        description: "The commit SHA to deploy to develop"
+        value: ${{ jobs.cut.outputs.ref }}
 
 jobs:
   cut:
@@ -104,8 +100,9 @@ jobs:
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 15
     outputs:
-      tag: ${{ steps.resolve.outputs.tag }}
+      tag: ""
       version: ${{ steps.resolve.outputs.version }}
+      ref: ${{ steps.resolve.outputs.ref }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -117,9 +114,8 @@ jobs:
           registry-url: ${{ inputs.registry_url }}
           scope: ${{ inputs.scope }}
 
-      - name: Check the repo can cut a prerelease
+      - name: Check the repo can be released
         env:
-          CHANNEL: ${{ inputs.channel }}
           DRY_RUN: ${{ inputs.dry_run }}
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -136,12 +132,8 @@ jobs:
               exit 1
             fi
           fi
-          case "$CHANNEL" in
-            rc|next) ;;
-            *) echo "::error::channel must be rc or next, got '$CHANNEL'"; exit 1 ;;
-          esac
           # Pre mode blocks the button; a repo that is exiting pre mode (mode "exit",
-          # waiting for its stable Version PR) may cut rcs of that stable version.
+          # waiting for its stable Version PR) may still release the coming stable version.
           if [ -f .changeset/pre.json ] && [ "$(node -p 'require("./.changeset/pre.json").mode')" = "pre" ]; then
             echo "::error::repo is in changesets pre mode (.changeset/pre.json); leave pre mode before using the release button"
             exit 1
@@ -160,12 +152,10 @@ jobs:
             fi
           fi
 
-      - name: Resolve the next prerelease
+      - name: Resolve the version
         id: resolve
         env:
-          CHANNEL: ${{ inputs.channel }}
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
         run: |
           # X.Y.Z: the highest bump any pending changeset gives this package,
           # applied to package.json's version (what `changeset version` would
@@ -196,46 +186,47 @@ jobs:
             else v = pre ? `${M}.${m2}.${p}` : `${M}.${m2}.${p + 1}`;
             console.log(v);
           ')
-          base="${base%%-*}"
-          highest=$(gh api "repos/$REPO/git/matching-refs/tags/v$base-$CHANNEL." --jq '.[].ref' \
-            | sed -E 's#^refs/tags/v[^-]+-[a-z]+\.([0-9]+)$#\1#' | grep -E '^[0-9]+$' | sort -n | tail -1)
-          n=$(( ${highest:--1} + 1 ))
-          version="$base-$CHANNEL.$n"
+          version="${base%%-*}"
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tag=v$version" >> "$GITHUB_OUTPUT"
-          echo "Next prerelease: v$version"
-          echo "### Release candidate: \`v$version\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "ref=$SHA" >> "$GITHUB_OUTPUT"
+          echo "Release version: $version (ref $SHA)"
+          echo "### Release: \`$version\` at \`$SHA\`" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Generate GitHub App token
-        if: ${{ !inputs.dry_run }}
-        id: app-token
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: ${{ secrets.BOT_APP_ID }}
-          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
-
-      - name: Create the tag and prerelease
-        if: ${{ !inputs.dry_run }}
+      - name: Resolve the next npm prerelease
+        # Read-only, so a dry run prints the version it would publish. The token
+        # (GitHub Packages) is scoped to this step; npmjs.org reads need none.
+        if: ${{ inputs.publish }}
+        id: npm
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          REPO: ${{ github.repository }}
-          SHA: ${{ github.sha }}
-          TAG: ${{ steps.resolve.outputs.tag }}
+          VERSION: ${{ steps.resolve.outputs.version }}
+          NODE_AUTH_TOKEN: ${{ !inputs.trusted_publishing && github.token || '' }}
         run: |
-          # A git push, not the refs API (which answers 403 for the App when the
-          # commit carries workflow files). Without --force the push fails if the
-          # tag already exists (a concurrent press) instead of moving it. The
-          # credential lives in .git/config only for this push, before any
-          # install or publish step runs.
-          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
-          echo "::add-mask::$auth"
-          git config --local http.https://github.com/.extraheader "AUTHORIZATION: basic $auth"
-          git tag "$TAG" "$SHA"
+          name=$(node -p 'require("./package.json").name')
           status=0
-          git push origin "refs/tags/$TAG" || status=$?
-          git config --local --unset-all http.https://github.com/.extraheader
-          [ "$status" -eq 0 ] || { echo "::error::could not push $TAG (it may already exist)"; exit "$status"; }
-          gh release create "$TAG" --repo "$REPO" --prerelease --generate-notes --verify-tag
+          out=$(npm view "$name" versions --json 2>&1) || status=$?
+          if [ "$status" -ne 0 ]; then
+            case "$out" in
+              *E404*) out='[]' ;;
+              *) echo "::error::npm view $name failed: $out"; exit "$status" ;;
+            esac
+          fi
+          # shellcheck disable=SC2016 # JavaScript in single quotes, not shell
+          n=$(VERSIONS="$out" node -e '
+            const raw = JSON.parse(process.env.VERSIONS || "[]");
+            const all = Array.isArray(raw) ? raw : [raw];
+            const prefix = `${process.env.VERSION}-next.`;
+            let n = -1;
+            for (const v of all) {
+              if (!v.startsWith(prefix)) continue;
+              const k = v.slice(prefix.length);
+              if (/^[0-9]+$/.test(k)) n = Math.max(n, Number(k));
+            }
+            console.log(n + 1);
+          ')
+          npm_version="$VERSION-next.$n"
+          echo "npm_version=$npm_version" >> "$GITHUB_OUTPUT"
+          echo "npm prerelease version: $npm_version (dist-tag next)"
+          echo "npm prerelease: \`$npm_version\` (dist-tag next)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install and build for publishing
         # No registry token here. With trusted_publishing the job can mint an OIDC token
@@ -245,7 +236,7 @@ jobs:
         if: ${{ !inputs.dry_run && inputs.publish }}
         env:
           INSTALL: ${{ inputs.install_command }}
-          VERSION: ${{ steps.resolve.outputs.version }}
+          VERSION: ${{ steps.npm.outputs.npm_version }}
         run: |
           if [ -n "$INSTALL" ]; then bash -euo pipefail -c "$INSTALL"; fi
           npm version "$VERSION" --no-git-tag-version --allow-same-version
@@ -255,12 +246,11 @@ jobs:
         # OIDC publishing needs npm >= 11.5.1; Node 22 ships npm 10.
         run: npm install -g npm@^11.5.1
 
-      - name: Publish the prerelease
+      - name: Publish the npm prerelease
         # Any token is scoped to this step, and --ignore-scripts keeps package
         # lifecycle scripts from running with it. Build in install_command.
         # Trusted publishing sends no token, so npm uses the OIDC exchange.
         if: ${{ !inputs.dry_run && inputs.publish }}
         env:
-          CHANNEL: ${{ inputs.channel }}
           NODE_AUTH_TOKEN: ${{ !inputs.trusted_publishing && github.token || '' }}
-        run: npm publish --tag "$CHANNEL" --ignore-scripts
+        run: npm publish --tag next --ignore-scripts
