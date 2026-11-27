@@ -386,10 +386,17 @@ def check_distinct(hash_: str, other_hash: str) -> None:
         raise AppError(f"develop and master share fingerprint {hash_}: builds can't be told apart")
 
 
-def run_platforms(cfg: Config, eas: dict, platforms: list, fingerprints, list_builds, runner, log) -> list:
+def format_modes(modes: dict) -> str:
+    return ",".join(f"{p}={m}" for p, m in modes.items())
+
+
+def run_platforms(
+    cfg: Config, eas: dict, platforms: list, fingerprints, list_builds, runner, log, modes: dict | None = None
+) -> list:
     """Run every platform; a failure stops that platform only. Returns the failed ones.
     fingerprints(platform) -> (this environment's hash, the other environment's hash);
-    list_builds(platform, hash) -> builds."""
+    list_builds(platform, hash) -> builds. A given `modes` dict gets each release platform's
+    decision, "OTA + build" or "build only", for the Slack post."""
     failed = []
     for platform in platforms:
         log(f"::group::{platform}")
@@ -400,8 +407,12 @@ def run_platforms(cfg: Config, eas: dict, platforms: list, fingerprints, list_bu
             if cfg.app and platform in cfg.platforms:
                 if has_build(builds, platform, hash_):
                     log("decision: a finished build of this fingerprint exists: OTA, then build")
+                    mode = "OTA + build"
                 else:
                     log("decision: no finished build of this fingerprint: build only")
+                    mode = "build only"
+                if modes is not None:
+                    modes[platform] = mode
             urls: dict = {}
             for step in plan_platform(cfg, eas, platform, hash_, builds):
                 if step.argv is None:
@@ -592,6 +603,7 @@ def main(argv: list) -> int:
     fingerprints, list_builds = make_lookups(
         cfg, args.dry_run, _pairs(args.fingerprint), _pairs(args.other_fingerprint), _pairs(args.builds_json)
     )
+    modes: dict = {}
     failed = run_platforms(
         cfg,
         eas,
@@ -600,7 +612,12 @@ def main(argv: list) -> int:
         list_builds,
         dry_runner if args.dry_run else real_runner,
         lambda line: print(line, flush=True),
+        modes,
     )
+    gh_output = os.environ.get("GITHUB_OUTPUT")
+    if gh_output:
+        with open(gh_output, "a") as fh:
+            fh.write(f"modes={format_modes(modes)}\n")
     if failed:
         print(f"::error::app step failed on: {' '.join(failed)}")
         return 1

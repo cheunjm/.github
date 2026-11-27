@@ -14,8 +14,8 @@ name: CD
 #
 #   plan            checks the inputs, computes the version and the OTA message, prints the
 #                   checklist. With backend off, migrations missing from the remote database
-#                   fail it unless ignore_pending_migrations is ticked. On master it fails
-#                   until Task 6 wires the master gate.
+#                   fail it unless ignore_pending_migrations is ticked. On master it then runs the
+#                   release gate (D46); a failed gate fails plan and skips every target.
 #   backend         supabase link; migration list (remote-only history fails, D23); db push;
 #                   functions deploy.
 #   app             Doppler EXPO_PUBLIC_* -> the EAS environment, expo.version = version, then
@@ -29,6 +29,7 @@ name: CD
 #   e2e             e2e-maestro.yml on the test builds; master runs only flows tagged smoke.
 #   develop-status  commit status cd/develop on the deployed commit; e2e-status sets
 #   e2e-status      cd/e2e-develop. The production gate trusts only these (D46).
+#   notify          one Slack post when slack_channel is set, whatever the results.
 #
 # A failed backend skips app, web and e2e. storybook waits for web but runs whatever web's
 # result, and its own failure blocks nothing (not even cd/develop, R14). e2e runs only when
@@ -151,13 +152,25 @@ on:
         type: string
         default: "npm ci"
       slack_channel:
-        description: "Slack channel ID for the release post (Task 6)"
+        description: "Slack channel ID for the release post; empty posts nothing (needs SLACK_BOT_TOKEN)"
         type: string
         default: ""
       scripts_ref:
         description: "Ref of cheunjm/.github to fetch scripts/cd_*.py from. Default v1; the self-test passes the PR head"
         type: string
         default: "v1"
+      working_directory:
+        description: "Directory of the app inside the checkout (the self-test uses fixtures/expo)"
+        type: string
+        default: "."
+      migration_list_stub:
+        description: "Self-test only, dry runs only: a file (relative to working_directory) read instead of `supabase migration list`, so the pending-migrations guard runs without secrets and fails for real"
+        type: string
+        default: ""
+      expect_failure:
+        description: "Self-test only: plan passes only when the pending-migrations guard or the master gate failed with output containing this text"
+        type: string
+        default: ""
     secrets:
       EXPO_TOKEN:
         required: false
@@ -221,6 +234,12 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       message: ${{ steps.version.outputs.message }}
     steps:
+      - name: Refuse expect_failure on a real run
+        if: inputs.expect_failure != '' && !inputs.dry_run
+        run: |
+          echo "::error::expect_failure is for dry runs"
+          exit 1
+
       - name: Fetch cd scripts
         env:
           SCRIPTS_REF: ${{ inputs.scripts_ref }}
@@ -249,60 +268,105 @@ jobs:
         with:
           ref: ${{ steps.validate.outputs.checkout }}
           persist-credentials: false
+          # The master gate walks first-parent history and compares against the tested commit.
+          # '0' as a string: the number 0 is falsy, so `&& 0 || 1` always gave 1.
+          fetch-depth: ${{ steps.validate.outputs.environment == 'master' && '0' || '1' }}
 
       - name: Compute version
         id: version
         if: steps.validate.outputs.environment != ''
+        working-directory: ${{ inputs.working_directory }}
         env:
           ENVIRONMENT: ${{ steps.validate.outputs.environment }}
           TAG: ${{ steps.validate.outputs.tag }}
         run: |
           sha="$(git rev-parse HEAD)"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          if compgen -G 'supabase/migrations/*.sql' > /dev/null; then echo "migrations=true" >> "$GITHUB_OUTPUT"; fi
           python3 "$CD_SCRIPTS/cd_plan.py" version --environment "$ENVIRONMENT" --tag "$TAG" --sha "$sha"
 
       - uses: supabase/setup-cli@689adcfb80d947100a1eab127289b97d1fb07b13 # v1
-        if: steps.validate.outputs.environment != '' && !inputs.backend && !inputs.ignore_pending_migrations && hashFiles('supabase/migrations/*.sql') != ''
+        if: steps.validate.outputs.environment != '' && !inputs.backend && !inputs.ignore_pending_migrations && steps.version.outputs.migrations == 'true' && inputs.migration_list_stub == ''
         with:
           version: ${{ env.SUPABASE_CLI_VERSION }}
 
-      # D40: an app or web deploy must not outrun the schema it needs.
+      # D40: an app or web deploy must not outrun the schema it needs. The self-test sets
+      # expect_failure (the step continues on error and the "Expected failure" step asserts
+      # it) and, in a dry run, migration_list_stub in place of the remote lookup.
       - name: Check for pending migrations
-        if: steps.validate.outputs.environment != '' && !inputs.backend && !inputs.ignore_pending_migrations && hashFiles('supabase/migrations/*.sql') != ''
+        id: pending
+        if: steps.validate.outputs.environment != '' && !inputs.backend && !inputs.ignore_pending_migrations && steps.version.outputs.migrations == 'true'
+        continue-on-error: ${{ inputs.expect_failure != '' && inputs.dry_run }}
+        working-directory: ${{ inputs.working_directory }}
         env:
           ENVIRONMENT: ${{ steps.validate.outputs.environment }}
           DRY_RUN: ${{ inputs.dry_run }}
+          STUB: ${{ inputs.migration_list_stub }}
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
           SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
         run: |
-          if [ -z "$SUPABASE_PROJECT_REF" ] || [ -z "$SUPABASE_ACCESS_TOKEN" ] || [ -z "$SUPABASE_DB_PASSWORD" ]; then
-            msg="cannot check pending migrations: SUPABASE_ACCESS_TOKEN, SUPABASE_DB_PASSWORD and SUPABASE_PROJECT_REF are not all set in the $ENVIRONMENT environment; tick backend or ignore_pending_migrations"
-            if [ "$DRY_RUN" = "true" ]; then echo "::warning::$msg"; exit 0; fi
-            echo "::error::$msg"
+          guard() {
+            hint="Tick backend to apply them, or ignore_pending_migrations to deploy anyway."
+            if [ -n "$STUB" ]; then
+              if [ "$DRY_RUN" != "true" ]; then echo "::error::migration_list_stub is for dry runs"; return 1; fi
+              echo "[dry run] migration list read from $STUB"
+              list="$(cat "$STUB")"
+              printf '%s\n' "$list"
+              printf '%s\n' "$list" | python3 "$CD_SCRIPTS/cd_plan.py" migrations --fail-on local-only --require-rows --hint "$hint"
+              return
+            fi
+            if [ -z "$SUPABASE_PROJECT_REF" ] || [ -z "$SUPABASE_ACCESS_TOKEN" ] || [ -z "$SUPABASE_DB_PASSWORD" ]; then
+              msg="cannot check pending migrations: SUPABASE_ACCESS_TOKEN, SUPABASE_DB_PASSWORD and SUPABASE_PROJECT_REF are not all set in the $ENVIRONMENT environment; tick backend or ignore_pending_migrations"
+              if [ "$DRY_RUN" = "true" ]; then echo "::warning::$msg"; return 0; fi
+              echo "::error::$msg"
+              return 1
+            fi
+            supabase link --project-ref "$SUPABASE_PROJECT_REF"
+            list="$(supabase migration list --remote --output-format json)"
+            printf '%s\n' "$list"
+            # Local migration files exist (the step's condition), so zero parsed rows fails closed.
+            args=(--fail-on local-only --require-rows --hint "$hint")
+            if [ "$DRY_RUN" = "true" ]; then args+=(--warn-only); fi
+            printf '%s\n' "$list" | python3 "$CD_SCRIPTS/cd_plan.py" migrations "${args[@]}"
+          }
+          guard 2>&1 | tee -a "$RUNNER_TEMP/cd-guard.log"
+
+      # D46: production ships what develop last deployed. gate.py comes from the fetched
+      # scripts_ref (not `uses:@v1`, which is a fixed ref), run inside the tag checkout. A
+      # failure fails plan, so every target job is skipped. A dry run runs it too: it only reads.
+      - name: Master gate
+        id: gate
+        if: steps.validate.outputs.environment == 'master'
+        continue-on-error: ${{ inputs.expect_failure != '' && inputs.dry_run }}
+        working-directory: ${{ inputs.working_directory }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          SHA: ${{ steps.version.outputs.sha }}
+          VERSION: ${{ steps.version.outputs.version }}
+          REQUIRE_E2E: ${{ inputs.e2e }}
+        run: |
+          args=(--sha "$SHA" --version "$VERSION")
+          if [ "$REQUIRE_E2E" = "true" ]; then args+=(--require-e2e); fi
+          python3 "$CD_SCRIPTS/../.github/actions/release-gate/gate.py" "${args[@]}" 2>&1 | tee -a "$RUNNER_TEMP/cd-guard.log"
+
+      - name: Expected failure
+        if: inputs.expect_failure != '' && inputs.dry_run
+        env:
+          EXPECT: ${{ inputs.expect_failure }}
+          PENDING: ${{ steps.pending.outcome }}
+          GATE: ${{ steps.gate.outcome }}
+        run: |
+          if [ "$PENDING" != "failure" ] && [ "$GATE" != "failure" ]; then
+            echo "::error::expect_failure is set but neither the pending-migrations guard nor the master gate failed (guard $PENDING, gate $GATE)"
             exit 1
           fi
-          supabase link --project-ref "$SUPABASE_PROJECT_REF"
-          list="$(supabase migration list --remote --output-format json)"
-          printf '%s\n' "$list"
-          # Local migration files exist (the step's condition), so zero parsed rows fails closed.
-          args=(--fail-on local-only --require-rows --hint "Tick backend to apply them, or ignore_pending_migrations to deploy anyway.")
-          if [ "$DRY_RUN" = "true" ]; then args+=(--warn-only); fi
-          printf '%s\n' "$list" | python3 "$CD_SCRIPTS/cd_plan.py" migrations "${args[@]}"
-
-      # PLACEHOLDER (INF-1983 Task 6): the master release gate (.github/actions/release-gate)
-      # replaces this step. Until then master fails closed; a dry run only notes it.
-      - name: Master gate (placeholder, Task 6)
-        if: steps.validate.outputs.environment == 'master'
-        env:
-          DRY_RUN: ${{ inputs.dry_run }}
-        run: |
-          if [ "$DRY_RUN" = "true" ]; then
-            echo "::notice::master gate not wired (Task 6); a real run fails here"
-            exit 0
+          if ! grep -qF -- "$EXPECT" "$RUNNER_TEMP/cd-guard.log"; then
+            echo "::error::the guard failed, but its output does not contain: $EXPECT"
+            exit 1
           fi
-          echo "::error::master gate not wired (Task 6)"
-          exit 1
+          echo "plan failed as expected: output contains '$EXPECT'"
 
       - name: Checklist
         env:
@@ -334,6 +398,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: ${{ needs.plan.outputs.environment }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -361,7 +428,7 @@ jobs:
           echo "[dry run] supabase link --project-ref <SUPABASE_PROJECT_REF>"
           echo "[dry run] supabase migration list --remote --output-format json   (a remote-only migration fails the job, D23)"
           echo "[dry run] supabase db push --remote --yes"
-          if [ -d supabase/functions ]; then echo "[dry run] supabase functions deploy --use-api --yes"; fi
+          if [ -n "$(ls -A supabase/functions 2>/dev/null)" ]; then echo "[dry run] supabase functions deploy --use-api --yes"; fi
 
       # Supabase CLI 3 targets the local database unless --remote is passed.
       - name: Link and check migration history
@@ -392,10 +459,11 @@ jobs:
         run: supabase db push --remote --yes
 
       - name: Deploy functions
-        if: ${{ !inputs.dry_run && hashFiles('supabase/functions/**') != '' }}
+        if: ${{ !inputs.dry_run }}
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-        run: supabase functions deploy --use-api --yes
+        run: |
+          if [ -n "$(ls -A supabase/functions 2>/dev/null)" ]; then supabase functions deploy --use-api --yes; fi
 
   app:
     name: app
@@ -405,7 +473,19 @@ jobs:
     runs-on: ${{ inputs.eas_runner }}
     timeout-minutes: 180
     environment: ${{ needs.plan.outputs.environment }}
+    outputs:
+      modes: ${{ steps.run.outputs.modes }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
     steps:
+      # The real build and the e2e build come from this one checkout: eas.json is a
+      # fingerprint source (D44).
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+
       # eas build --local works in $TMPDIR by default, and a cancelled build left GBs there
       # (INF-2090); the runner empties $RUNNER_TEMP after every job.
       - name: Prepare the job
@@ -433,17 +513,11 @@ jobs:
             echo "FASTLANE_XCODEBUILD_SETTINGS_RETRIES=3"
           } >> "$GITHUB_ENV"
 
-      # The real build and the e2e build come from this one checkout: eas.json is a
-      # fingerprint source (D44).
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.plan.outputs.sha }}
-          persist-credentials: false
-
       - uses: actions/setup-node@v7
         with:
           node-version: ${{ inputs.node_version }}
-          cache: ${{ hashFiles('package-lock.json') != '' && 'npm' || '' }}
+          cache: ${{ hashFiles(format('{0}/package-lock.json', inputs.working_directory)) != '' && 'npm' || '' }}
+          cache-dependency-path: ${{ inputs.working_directory }}/package-lock.json
 
       - name: Fetch cd scripts
         env:
@@ -565,6 +639,7 @@ jobs:
           mode: acquire
 
       - name: App step
+        id: run
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
           DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
@@ -644,6 +719,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: ${{ needs.plan.outputs.environment }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
     env:
       VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
       VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
@@ -659,7 +737,8 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: ${{ inputs.node_version }}
-          cache: ${{ hashFiles('package-lock.json') != '' && 'npm' || '' }}
+          cache: ${{ hashFiles(format('{0}/package-lock.json', inputs.working_directory)) != '' && 'npm' || '' }}
+          cache-dependency-path: ${{ inputs.working_directory }}/package-lock.json
 
       - name: Dry run
         if: inputs.dry_run
@@ -712,6 +791,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: ${{ needs.plan.outputs.environment }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
     env:
       VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
       VERCEL_PROJECT_ID: ${{ vars.STORYBOOK_VERCEL_PROJECT_ID }}
@@ -725,7 +807,8 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: ${{ inputs.node_version }}
-          cache: ${{ hashFiles('package-lock.json') != '' && 'npm' || '' }}
+          cache: ${{ hashFiles(format('{0}/package-lock.json', inputs.working_directory)) != '' && 'npm' || '' }}
+          cache-dependency-path: ${{ inputs.working_directory }}/package-lock.json
 
       - name: Dry run
         if: inputs.dry_run
@@ -825,3 +908,67 @@ jobs:
           gh api -X POST "repos/$REPO/statuses/$SHA" -f state=success -f "context=$CONTEXT" \
             -f "target_url=$RUN_URL" -f "description=$DESCRIPTION" > /dev/null
           echo "$CONTEXT = success on $SHA"
+
+  # One post per run, whatever happened. The checklist lines are the jobs' own results
+  # ("off" when the box was not ticked); a Slack failure only warns.
+  notify:
+    name: notify
+    needs: [plan, backend, app, web, storybook, e2e]
+    if: always() && inputs.slack_channel != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Post to Slack
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL: ${{ inputs.slack_channel }}
+          REPOSITORY: ${{ github.repository }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          TARGET: ${{ inputs.tag || inputs.ref || github.sha }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PLAN: ${{ needs.plan.result }}
+          BACKEND: ${{ inputs.backend && needs.backend.result || 'off' }}
+          APP: ${{ inputs.app && needs.app.result || 'off' }}
+          WEB: ${{ inputs.web && needs.web.result || 'off' }}
+          STORYBOOK: ${{ inputs.storybook && needs.storybook.result || 'off' }}
+          E2E: ${{ inputs.e2e && needs.e2e.result || 'off' }}
+          MODES: ${{ needs.app.outputs.modes }}
+        run: |
+          if [ -z "$SLACK_BOT_TOKEN" ]; then
+            echo "::warning::slack_channel is set but SLACK_BOT_TOKEN is not; nothing posted"
+            exit 0
+          fi
+          esc() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
+          topic=$(printf '%s' "${REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]' | esc)
+          icon="✅"
+          for r in "$PLAN" "$BACKEND" "$APP" "$WEB" "$STORYBOOK" "$E2E"; do
+            case "$r" in failure|cancelled) icon="❌" ;; esac
+          done
+          dry=""
+          if [ "$DRY_RUN" = "true" ]; then dry=" (dry run)"; fi
+          target="$TARGET"
+          if [ "${#target}" -eq 40 ]; then target="${target:0:7}"; fi
+          text=$(printf '%s [%s]\n%s %s%s' "$icon" "$topic" "${ENVIRONMENT:-nothing to deploy}" "$(printf '%s' "$target" | esc)" "$dry")
+          line() { text+=$(printf '\n• %s: %s' "$1" "$2"); }
+          line plan "$PLAN"
+          line backend "$BACKEND"
+          line app "$APP"
+          IFS=',' read -ra pairs <<< "$MODES"
+          for pair in "${pairs[@]}"; do
+            if [ -n "$pair" ]; then text+=$(printf '\n   ◦ %s: %s' "${pair%%=*}" "${pair#*=}"); fi
+          done
+          line web "$WEB"
+          line storybook "$STORYBOOK"
+          line e2e "$E2E"
+          text+=$(printf '\n→ <%s|run>' "$RUN_URL")
+
+          payload=$(jq -n --arg channel "$SLACK_CHANNEL" --arg text "$text" '{channel: $channel, text: $text}')
+
+          response=$(curl -sS -X POST https://slack.com/api/chat.postMessage \
+            -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+            -H "Content-Type: application/json; charset=utf-8" \
+            --data "$payload") || response=""
+          if ! printf '%s' "$response" | jq -e '.ok == true' > /dev/null 2>&1; then
+            echo "::warning::Slack post failed: $(printf '%s' "$response" | jq -r '.error // "no response"' 2>/dev/null)"
+          fi

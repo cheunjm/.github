@@ -1,0 +1,38 @@
+{
+  "cli": {
+    "version": ">= 16.0.0",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "develop": {
+      "channel": "develop",
+      "distribution": "internal",
+      "autoIncrement": true,
+      "env": { "APP_ENV": "develop" }
+    },
+    "develop-apk": {
+      "extends": "develop",
+      "android": { "buildType": "apk" }
+    },
+    "master": {
+      "channel": "master",
+      "autoIncrement": true,
+      "env": { "APP_ENV": "master" }
+    },
+    "e2e-develop": {
+      "extends": "develop",
+      "android": { "buildType": "apk" },
+      "ios": { "simulator": true }
+    },
+    "e2e-master": {
+      "extends": "master",
+      "android": { "buildType": "apk" },
+      "ios": { "simulator": true }
+    }
+  },
+  "submit": {
+    "master": {
+      "android": { "serviceAccountKeyPath": "./play-service-account.json" }
+    }
+  }
+}
