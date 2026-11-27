@@ -1,5 +1,11 @@
 # .github
 
+## 1.2.1
+
+### Patch Changes
+
+- [#155](https://github.com/cheunjm/.github/pull/155) [`b445710`](https://github.com/cheunjm/.github/commit/b445710e5efd3f33fa496f7de937a9a1fb18015f) Thanks [@cheunjm](https://github.com/cheunjm)! - `openwiki-update.yml`: a failed generation no longer pushes its partial output over the open docs PR, and the merge waits for GitHub to compute mergeability before trying.
+
 ## 1.2.0
 
 ### Minor Changes
