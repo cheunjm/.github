@@ -1,7 +1,7 @@
 name: RC self-test
 
 # Dry-runs the shared release-candidate.yml against this repo on every PR that
-# touches it: resolves the next prerelease tag and prints it, creating nothing.
+# touches it: resolves the version and ref, publishes and tags nothing (D46).
 
 on:
   pull_request:
@@ -17,11 +17,19 @@ jobs:
   rc:
     uses: ./.github/workflows/release-candidate.yml
     with:
-      channel: rc
       dry_run: true
 
-  next:
-    uses: ./.github/workflows/release-candidate.yml
-    with:
-      channel: next
-      dry_run: true
+  check:
+    needs: rc
+    runs-on: ubuntu-latest
+    steps:
+      - name: Outputs are a version and a ref, and no tag
+        env:
+          VERSION: ${{ needs.rc.outputs.version }}
+          REF: ${{ needs.rc.outputs.ref }}
+          TAG: ${{ needs.rc.outputs.tag }}
+        run: |
+          echo "version=$VERSION ref=$REF tag='$TAG'"
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::version is not X.Y.Z"; exit 1; }
+          [[ "$REF" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::ref is not a SHA"; exit 1; }
+          [ -z "$TAG" ] || { echo "::error::tag must be empty"; exit 1; }
