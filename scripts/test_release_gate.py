@@ -36,6 +36,9 @@ class ReleaseGateTest(unittest.TestCase):
         self.paths = []
         self.check_runs = [{"id": 1, "name": "ci / gate", "conclusion": "success", "app": {"id": 15368}}]
         self.statuses = {}
+        self.runs = {}
+        self.run_error = False
+        self.default_branch = "main"
         self.git("init", "-q", "-b", "main")
         self.write_versions("1.2.2", "1.0.0", "1.0.0")
         self.write("src.js", "one\n")
@@ -54,9 +57,17 @@ class ReleaseGateTest(unittest.TestCase):
         self.write_versions(version, "1.0.0", "1.0.0")
         self.commit("bump")
 
-    def deploy(self, sha, state="success", creator=BOT, created_at="2026-01-01T00:00:00Z", context="cd/develop"):
+    def deploy(self, sha, state="success", creator=BOT, created_at="2026-01-01T00:00:00Z", context="cd/develop",
+               url=None, **run):
+        rid = 1000 + len(self.runs)
+        self.runs[rid] = {
+            "event": "workflow_dispatch", "head_branch": "main", "path": ".github/workflows/release-candidate.yml",
+            "head_sha": sha, "conclusion": "success", **run,
+        }
+        if url is None:
+            url = f"https://github.com/o/r/actions/runs/{rid}/job/1"
         self.statuses.setdefault(sha, []).append(
-            {"context": context, "state": state, "created_at": created_at, "creator": creator}
+            {"context": context, "state": state, "created_at": created_at, "creator": creator, "target_url": url}
         )
 
     def git(self, *args):
@@ -84,6 +95,13 @@ class ReleaseGateTest(unittest.TestCase):
         m = re.search(r"commits/([0-9a-f]{40})/statuses", path)
         if m:
             return self.statuses.get(m.group(1), [])
+        m = re.fullmatch(r"repos/o/r/actions/runs/(\d+)", path)
+        if m:
+            if self.run_error:
+                raise RuntimeError("HTTP 500")
+            return self.runs[int(m.group(1))]
+        if path == "repos/o/r":
+            return {"default_branch": self.default_branch}
         raise AssertionError(path)
 
     def run_gate(self, require_e2e=False, sha=None):
@@ -301,6 +319,65 @@ class ReleaseGateTest(unittest.TestCase):
         code, err = self.run_gate(require_e2e=True)
         self.assertEqual(code, 1)
         self.assertIn("has no green develop e2e: press the release button first", err)
+
+    def assert_no_develop_deploy(self):
+        code, err = self.run_gate()
+        self.assertEqual(code, 1)
+        self.assertIn("no develop deploy before", err)
+
+    def test_status_from_pr_branch_run_ignored(self):
+        self.statuses.clear()
+        self.deploy(self.dev_sha, event="pull_request")
+        self.assert_no_develop_deploy()
+
+    def test_status_from_other_workflow_ignored(self):
+        self.statuses.clear()
+        self.deploy(self.dev_sha, path=".github/workflows/other.yml")
+        self.assert_no_develop_deploy()
+
+    def test_status_run_on_other_branch_ignored(self):
+        self.statuses.clear()
+        self.deploy(self.dev_sha, head_branch="feature")
+        self.assert_no_develop_deploy()
+
+    def test_status_run_head_sha_mismatch_ignored(self):
+        self.statuses.clear()
+        self.deploy(self.dev_sha, head_sha="f" * 40)
+        self.assert_no_develop_deploy()
+
+    def test_status_without_run_url_ignored(self):
+        for url in ("", "https://github.com/other/repo/actions/runs/1000", "https://example.com/o/r/actions/runs/1000"):
+            self.statuses.clear()
+            self.deploy(self.dev_sha, url=url or None)
+            if not url:
+                self.statuses[self.dev_sha][0]["target_url"] = ""
+            self.assert_no_develop_deploy()
+
+    def test_failed_run_with_status_still_counts(self):
+        self.statuses.clear()
+        self.deploy(self.dev_sha, conclusion="failure")
+        self.bump()
+        code, err = self.run_gate()
+        self.assertEqual(code, 0, err)
+
+    def test_run_lookup_error_fails_closed(self):
+        self.run_error = True
+        code, err = self.run_gate()
+        self.assertEqual(code, 1)
+        self.assertIn(f"could not verify cd/develop on {self.dev_sha[:7]}: press the release button first", err)
+
+    def test_forged_success_does_not_mask_genuine_failure(self):
+        self.deploy(self.dev_sha, "failure", created_at="2026-01-02T00:00:00Z")
+        self.deploy(self.dev_sha, created_at="2026-01-03T00:00:00Z", event="pull_request")
+        self.assert_no_develop_deploy()
+
+    def test_forged_e2e_status_ignored(self):
+        self.bump()
+        self.e2e()
+        self.statuses[self.dev_sha][-1]["target_url"] = ""
+        code, err = self.run_gate(require_e2e=True)
+        self.assertEqual(code, 1)
+        self.assertIn("has no green develop e2e", err)
 
 
 if __name__ == "__main__":

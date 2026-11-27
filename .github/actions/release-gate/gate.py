@@ -4,8 +4,9 @@
   gate.py --sha SHA --version X.Y.Z [--require-e2e]   (--tag is accepted and ignored)
 
 Needs GH_TOKEN (gh) and a full-history checkout. Fails in this order: not on main;
-`ci / gate` not green on the SHA; no `cd/develop` success (from github-actions[bot])
-in the SHA's first-parent history, 100 commits back at most; code differs from the
+`ci / gate` not green on the SHA; no `cd/develop` success (from github-actions[bot],
+whose target_url is a workflow_dispatch run of release-candidate.yml on the default
+branch at that commit) in the SHA's first-parent history, 100 commits back at most; code differs from the
 newest such commit (the tested commit) beyond version fields, CHANGELOG.md and
 .changeset/; (--require-e2e) the tested commit has no green `cd/e2e-develop` status.
 Every failure message ends in `press the release button first`.
@@ -15,6 +16,7 @@ import argparse
 import copy
 import json
 import os
+import re
 import subprocess
 import sys
 import urllib.parse
@@ -24,6 +26,7 @@ E2E_CONTEXT = "cd/e2e-develop"
 CI_APP_ID = 15368
 DEVELOP_CONTEXT = "cd/develop"
 STATUS_CREATOR = "github-actions[bot]"
+RELEASE_WORKFLOW = ".github/workflows/release-candidate.yml"
 SEARCH_DEPTH = 100
 HINT = "press the release button first"
 MISSING = object()
@@ -48,23 +51,55 @@ def on_main(cwd, sha):
     return git(cwd, "merge-base", "--is-ancestor", sha, base, check=False).returncode == 0
 
 
-def green_status(api, repo, sha, context):
-    """True when the newest `context` status on sha from github-actions[bot] is success."""
+class UnverifiedStatus(Exception):
+    pass
+
+
+def from_release_run(api, repo, sha, status, cache):
+    """True when the status links to a release-button run on the default branch at sha.
+
+    Any job token can post as github-actions[bot], so the creator alone proves nothing.
+    The run's conclusion is not checked: a later failing step leaves the deploy standing.
+    """
+    m = re.fullmatch(rf"https://github\.com/{re.escape(repo)}/actions/runs/(\d+)(/.*)?", status.get("target_url") or "")
+    if not m:
+        return False
+    try:
+        if "branch" not in cache:
+            cache["branch"] = api(f"repos/{repo}").get("default_branch")
+        run = api(f"repos/{repo}/actions/runs/{m.group(1)}")
+        return (
+            run.get("event") == "workflow_dispatch"
+            and run.get("head_branch") == cache["branch"]
+            and run.get("path") == RELEASE_WORKFLOW
+            and run.get("head_sha") == sha
+        )
+    except Exception as e:
+        raise UnverifiedStatus(status.get("context")) from e
+
+
+def green_status(api, repo, sha, context, cache=None):
+    """True when the newest provenance-verified `context` status on sha is success."""
+    cache = {} if cache is None else cache
     statuses = api(f"repos/{repo}/commits/{sha}/statuses?per_page=100")
     mine = [
         s for s in statuses
         if s.get("context") == context and (s.get("creator") or {}).get("login") == STATUS_CREATOR
     ]
+    mine = [s for s in mine if from_release_run(api, repo, sha, s, cache)]
     newest = max(mine, key=lambda s: s.get("created_at", ""), default=None)
     return bool(newest) and newest.get("state") == "success"
 
 
-def tested_commit(api, repo, cwd, sha):
+def tested_commit(api, repo, cwd, sha, cache=None):
     """Newest commit in sha's first-parent history (sha included) deployed to develop."""
     commits = git(cwd, "rev-list", "--first-parent", "-n", str(SEARCH_DEPTH), sha).stdout.split()
     for c in commits:
-        if green_status(api, repo, c, DEVELOP_CONTEXT):
-            return c
+        try:
+            if green_status(api, repo, c, DEVELOP_CONTEXT, cache):
+                return c
+        except UnverifiedStatus as e:
+            raise UnverifiedStatus(f"could not verify {e} on {c[:7]}") from e
     return None
 
 
@@ -148,15 +183,24 @@ def check(sha, version, require_e2e, api=gh_api, cwd=".", repo=None):
     if not latest or latest.get("conclusion") != "success":
         return fail(f"`{CI_CHECK}` is not green on {sha}: {HINT}")
 
-    tested = tested_commit(api, repo, cwd, sha)
+    cache = {}
+    try:
+        tested = tested_commit(api, repo, cwd, sha, cache)
+    except UnverifiedStatus as e:
+        return fail(f"{e}: {HINT}")
     if not tested:
         return fail(f"no develop deploy before {sha[:7]}: {HINT}")
 
     if code_differs(cwd, tested, sha, version):
         return fail(f"code differs from the last develop deploy {tested[:7]}: {HINT}")
 
-    if require_e2e and not green_status(api, repo, tested, E2E_CONTEXT):
-        return fail(f"{tested[:7]} has no green develop e2e: {HINT}")
+    if require_e2e:
+        try:
+            e2e_ok = green_status(api, repo, tested, E2E_CONTEXT, cache)
+        except UnverifiedStatus as e:
+            return fail(f"could not verify {e} on {tested[:7]}: {HINT}")
+        if not e2e_ok:
+            return fail(f"{tested[:7]} has no green develop e2e: {HINT}")
 
     print(f"gate ok: {sha} matches the develop deploy {tested[:7]}")
     return 0
