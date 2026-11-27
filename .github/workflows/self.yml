@@ -21,6 +21,7 @@ jobs:
       test_command: >-
         python3 -m unittest scripts/test_studio_lock.py scripts/test_release_gate.py
         scripts/test_contract_check.py scripts/test_sync_app_json.py
+        scripts/test_cd_plan.py scripts/test_cd_app.py
       # Pinned: @latest lets a new release change what blocks every PR.
       lint_command: >-
         go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 &&
@@ -193,3 +194,128 @@ jobs:
           app="$(node -p 'require("./app.json").expo.version')"
           echo "package.json $pkg, app.json $app"
           [ "$pkg" = "1.1.0" ] && [ "$app" = "$pkg" ]
+
+  # cd.yml dry runs against fixtures/expo (INF-1983 D40-D46). scripts_ref is this PR's head,
+  # so they exercise this PR's scripts. No secrets: dry runs pass without EXPO_TOKEN.
+  cd-develop:
+    permissions:
+      contents: read
+      statuses: write
+      checks: read
+    uses: ./.github/workflows/cd.yml
+    with:
+      environment: develop
+      dry_run: true
+      working_directory: fixtures/expo
+      install_command: ""
+      eas_runner: ubuntu-latest
+      scripts_ref: ${{ github.event.pull_request.head.sha }}
+      backend: true
+      app: true
+      web: true
+      storybook: true
+      e2e: true
+      firebase_groups: internal
+      sideload_apk: true
+
+  # No environment: nothing deploys and every target job is skipped.
+  cd-empty:
+    permissions:
+      contents: read
+      statuses: write
+      checks: read
+    uses: ./.github/workflows/cd.yml
+    with:
+      dry_run: true
+      working_directory: fixtures/expo
+      eas_runner: ubuntu-latest
+      scripts_ref: ${{ github.event.pull_request.head.sha }}
+      backend: true
+      app: true
+      web: true
+      storybook: true
+      e2e: true
+
+  latest-tag:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - id: tag
+        env:
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          tag="$(git ls-remote --tags --refs "$REPO_URL" 'v*' | sed 's|.*refs/tags/||' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)"
+          echo "latest stable tag: $tag"
+          [ -n "$tag" ]
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  # This repo's own latest release has no develop deploy behind it, so the master gate must
+  # refuse it. The called workflow cannot be inverted from here, so cd.yml's expect_failure
+  # does it: plan passes only when the gate failed. This repo's checks run on pull requests
+  # only, so a release commit has no `ci / gate` and the gate stops at its second check.
+  cd-master-gate:
+    needs: latest-tag
+    permissions:
+      contents: read
+      statuses: write
+      checks: read
+    uses: ./.github/workflows/cd.yml
+    with:
+      environment: master
+      tag: ${{ needs.latest-tag.outputs.tag }}
+      dry_run: true
+      ignore_pending_migrations: true
+      eas_runner: ubuntu-latest
+      scripts_ref: ${{ github.event.pull_request.head.sha }}
+      expect_failure: "`ci / gate` is not green on"
+
+  # backend is off and the fixture has a migration the stub lists as missing remotely.
+  cd-pending-migrations:
+    permissions:
+      contents: read
+      statuses: write
+      checks: read
+    uses: ./.github/workflows/cd.yml
+    with:
+      environment: develop
+      dry_run: true
+      working_directory: fixtures/expo
+      eas_runner: ubuntu-latest
+      scripts_ref: ${{ github.event.pull_request.head.sha }}
+      migration_list_stub: supabase/migration-list.json
+      expect_failure: "1 local migration is not on the remote database"
+
+  cd-pending-migrations-ignored:
+    permissions:
+      contents: read
+      statuses: write
+      checks: read
+    uses: ./.github/workflows/cd.yml
+    with:
+      environment: develop
+      dry_run: true
+      working_directory: fixtures/expo
+      eas_runner: ubuntu-latest
+      scripts_ref: ${{ github.event.pull_request.head.sha }}
+      migration_list_stub: supabase/migration-list.json
+      ignore_pending_migrations: true
+
+  # expect_failure must never turn a failed guard into a pass on a real run. A called
+  # workflow's failure cannot be inverted here, so this checks cd.yml's three conditions.
+  cd-expect-failure-dry-only:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: expect_failure is gated on dry_run
+        run: |
+          f=.github/workflows/cd.yml
+          n="$(grep -cF "continue-on-error: "'$'"{{ inputs.expect_failure != '' && inputs.dry_run }}" "$f")"
+          [ "$n" -eq 2 ] || { echo "::error::expected 2 dry_run-gated continue-on-error lines, found $n"; exit 1; }
+          if grep -F "continue-on-error" "$f" | grep -F "expect_failure" | grep -vqF "&& inputs.dry_run"; then
+            echo "::error::a continue-on-error on expect_failure is not gated on dry_run"; exit 1
+          fi
+          grep -qF "if: inputs.expect_failure != '' && !inputs.dry_run" "$f" || { echo "::error::the real-run refusal step is missing"; exit 1; }
+          grep -qF "expect_failure is for dry runs" "$f" || { echo "::error::the refusal message is missing"; exit 1; }
+          grep -qF "if: inputs.expect_failure != '' && inputs.dry_run" "$f" || { echo "::error::Expected failure step is not dry_run-gated"; exit 1; }
+          echo "expect_failure is inert outside dry runs"
