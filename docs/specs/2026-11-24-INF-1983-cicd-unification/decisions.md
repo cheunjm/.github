@@ -491,7 +491,7 @@ D20–D23 came from the builder check on 2026-11-24.
 - **Choice:**
   - **Version:** `app.json` `expo.version` equals `package.json` `version`, written by the Version PR. Develop builds use `X.Y.Z` (stores accept no prerelease suffix), set in CI only. Build numbers are EAS remote and auto-incremented.
   - **App step:** one checkbox. Per platform, if a build of the current fingerprint already exists in that environment, the OTA is published first, so existing users update now. Then a new build is always made and distributed: develop to Firebase and the sideload APK, production to the App Store, Play Store and Firebase.
-- **Risk:** if `version` were part of the fingerprint, every release would get a new runtime and existing users would stop receiving OTAs. Expo's `balanced` preset skips it; Task 1 verifies it in each app.
+- **Risk:** if `version` were part of the fingerprint, every release would get a new runtime and existing users would stop receiving OTAs. Expo's `balanced` preset skips it; Task 1 verifies it in each app. (It does not: each app adds `fingerprint.config.js`, see Verified.)
 - **Cost:** a Studio build per platform and a store review on every release.
 - **Proposed by:** human (one version, always submit, one app step), ai (OTA-first order)
 - **Chosen by:** human
@@ -499,8 +499,7 @@ D20–D23 came from the builder check on 2026-11-24.
 - **Verified (2026-11-27):** eas-cli 27.11.0, `fingerprint:generate -e <profile> --json`, run on a scratch checkout of each app's `main`. H1 is the `develop` fingerprint, H2 the same with `expo.version` set to `9.9.9`, H3 the `e2e-develop` profile (`extends: develop`; Android `buildType: apk`, iOS `simulator: true`). **Result: version check FAILED in all 6 (H1 != H2); e2e profile check passed in all 6.**
   - **Version:** the only changed source is `expoConfig` (its `version` field). The `balanced` preset does not skip `ExpoConfigVersions` here (`@expo/fingerprint` 0.20.16 `DEFAULT_SOURCE_SKIPS`). Each app needs a `fingerprint.config.js` with `sourceSkips: DEFAULT_SOURCE_SKIPS | SourceSkips.ExpoConfigVersions`. With it, H2 equals H1 in all 6 (tested throwaway, not committed).
   - **Test build:** `eas.json` is itself a fingerprint source (`easBuild`), so adding the `e2e-develop` profile changes every hash once, but `-e e2e-develop` and `-e develop` give the same hash on the same `eas.json` (H3 equals the `develop` hash of the edited file). The profile adds no difference. H3 is the hash after the profile is added; H1 is the hash before it.
-
-  - **Fix:** `fingerprint.config.js` adds `SourceSkips.ExpoConfigVersions` in each app ([starlog](https://github.com/cheunjm/starlog/pull/162), [arami](https://github.com/cheunjm/arami/pull/100), [give-and-take](https://github.com/cheunjm/give-and-take/pull/50)); H1 == H2 in all 6 with it. Adding the file changes each app's runtime once. `eas.json` is a fingerprint source too, so a test build must come from the same commit as the real build, which `cd`'s app job does by building both from one checkout.
+  - **Fix:** `fingerprint.config.js` adds `SourceSkips.ExpoConfigVersions` in each app ([starlog](https://github.com/cheunjm/starlog/pull/162), [arami](https://github.com/cheunjm/arami/pull/100), [give-and-take](https://github.com/cheunjm/give-and-take/pull/50)); H1 == H2 in all 6 with it. Adding the file changes each app's runtime once. `eas.json` is a fingerprint source too, so a test build must come from the same commit as the real build, so `cd`'s app job must build both from one checkout (Task 5).
 
   | repo | platform | profile | H1 | H2 | H3 | result |
   |---|---|---|---|---|---|---|
