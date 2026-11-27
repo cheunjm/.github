@@ -234,6 +234,12 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       message: ${{ steps.version.outputs.message }}
     steps:
+      - name: Refuse expect_failure on a real run
+        if: inputs.expect_failure != '' && !inputs.dry_run
+        run: |
+          echo "::error::expect_failure is for dry runs"
+          exit 1
+
       - name: Fetch cd scripts
         env:
           SCRIPTS_REF: ${{ inputs.scripts_ref }}
@@ -290,7 +296,7 @@ jobs:
       - name: Check for pending migrations
         id: pending
         if: steps.validate.outputs.environment != '' && !inputs.backend && !inputs.ignore_pending_migrations && steps.version.outputs.migrations == 'true'
-        continue-on-error: ${{ inputs.expect_failure != '' }}
+        continue-on-error: ${{ inputs.expect_failure != '' && inputs.dry_run }}
         working-directory: ${{ inputs.working_directory }}
         env:
           ENVIRONMENT: ${{ steps.validate.outputs.environment }}
@@ -332,7 +338,7 @@ jobs:
       - name: Master gate
         id: gate
         if: steps.validate.outputs.environment == 'master'
-        continue-on-error: ${{ inputs.expect_failure != '' }}
+        continue-on-error: ${{ inputs.expect_failure != '' && inputs.dry_run }}
         working-directory: ${{ inputs.working_directory }}
         env:
           GH_TOKEN: ${{ github.token }}
@@ -346,7 +352,7 @@ jobs:
           python3 "$CD_SCRIPTS/../.github/actions/release-gate/gate.py" "${args[@]}" 2>&1 | tee -a "$RUNNER_TEMP/cd-guard.log"
 
       - name: Expected failure
-        if: inputs.expect_failure != ''
+        if: inputs.expect_failure != '' && inputs.dry_run
         env:
           EXPECT: ${{ inputs.expect_failure }}
           PENDING: ${{ steps.pending.outcome }}
