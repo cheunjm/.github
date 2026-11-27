@@ -1,0 +1,36 @@
+name: release-gate
+description: Master release gate (INF-1983 D26, D27, D45). Needs a full-history checkout with tags.
+
+inputs:
+  sha:
+    description: Commit to release
+    required: true
+  tag:
+    description: Release tag being cut, if any
+    default: ""
+  version:
+    description: Version X.Y.Z being released
+    required: true
+  require-e2e:
+    description: Also require a green cd/e2e-develop status on the rc commit (true or false)
+    default: "false"
+  github-token:
+    description: Token for the GitHub API
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        GATE_SHA: ${{ inputs.sha }}
+        GATE_TAG: ${{ inputs.tag }}
+        GATE_VERSION: ${{ inputs.version }}
+        GATE_REQUIRE_E2E: ${{ inputs.require-e2e }}
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        args=(--sha "$GATE_SHA" --tag "$GATE_TAG" --version "$GATE_VERSION")
+        if [ "$GATE_REQUIRE_E2E" = "true" ]; then
+          args+=(--require-e2e)
+        fi
+        python3 "$GITHUB_ACTION_PATH/gate.py" "${args[@]}"

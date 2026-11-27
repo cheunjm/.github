@@ -1,0 +1,51 @@
+name: studio-lock
+description: Cap heavy jobs on the Mac Studio to N at once (INF-1983 D37). Acquire a slot, release it at the end of the job.
+
+inputs:
+  mode:
+    description: acquire or release
+    required: true
+  slots:
+    description: Number of slots
+    default: "2"
+  timeout-minutes:
+    description: Minutes to wait for a slot before failing
+    default: "120"
+  slot:
+    description: Slot to release (release only; use the acquire step's slot output)
+    default: ""
+
+outputs:
+  slot:
+    description: The slot taken (acquire)
+    value: ${{ steps.lock.outputs.slot }}
+
+runs:
+  using: composite
+  steps:
+    - id: lock
+      shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+        SLOTS: ${{ inputs.slots }}
+        TIMEOUT_MINUTES: ${{ inputs.timeout-minutes }}
+        SLOT: ${{ inputs.slot }}
+        OWNER_ID: ${{ github.run_id }}-${{ github.job }}
+        OWNER_REPO: ${{ github.repository }}
+        OWNER_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: |
+        lock_dir="${STUDIO_LOCK_DIR:-$HOME/Library/Caches/cheunjm-studio-lock}"
+        case "$MODE" in
+          acquire)
+            owner="$(python3 -c 'import json,os; print(json.dumps({"id": os.environ["OWNER_ID"], "repo": os.environ["OWNER_REPO"], "run_url": os.environ["OWNER_RUN_URL"]}))')"
+            out="$(python3 "$GITHUB_ACTION_PATH/lock.py" acquire --dir "$lock_dir" --slots "$SLOTS" --timeout-minutes "$TIMEOUT_MINUTES" --owner "$owner")"
+            echo "$out" >> "$GITHUB_OUTPUT"
+            ;;
+          release)
+            python3 "$GITHUB_ACTION_PATH/lock.py" release --dir "$lock_dir" --slot "$SLOT" --owner-id "$OWNER_ID"
+            ;;
+          *)
+            echo "mode must be acquire or release" >&2
+            exit 1
+            ;;
+        esac
