@@ -81,6 +81,16 @@ on:
         required: false
         type: string
         default: "3.0.3"
+      app-json:
+        description: "Path to an Expo app.json. After `changeset version`, its `expo.version` is set to the new package.json version in the same Version PR commit (INF-1983 D44). Fails if the file has no `expo.version`. Empty skips it."
+        required: false
+        type: string
+        default: ""
+      scripts-ref:
+        description: "Ref of cheunjm/.github to fetch the guard scripts from (tag, branch or SHA). Default v1."
+        required: false
+        type: string
+        default: "v1"
       trusted-publishing:
         description: "Publish to npmjs.org with npm trusted publishing (OIDC): upgrades npm to >=11.5.1 and sets no NODE_AUTH_TOKEN. The caller must grant `id-token: write` and register its release workflow as the package's trusted publisher."
         required: false
@@ -139,6 +149,22 @@ jobs:
           mkdir -p .git/info
           printf 'node_modules/\n' >> .git/info/exclude
 
+      - name: Fetch version script
+        if: ${{ inputs.app-json != '' }}
+        env:
+          SCRIPTS_REF: ${{ inputs.scripts-ref }}
+          APP_JSON_INPUT: ${{ inputs.app-json }}
+        run: |
+          # scripts/version_with_app_json.sh runs `changeset version`, then keeps app.json in
+          # step with package.json. It lives in cheunjm/.github (public), at `scripts-ref`
+          # (default v1), under RUNNER_TEMP so `git add .` never commits it.
+          dir="$(mktemp -d "$RUNNER_TEMP/cheunjm-github.XXXXXX")"
+          git init -q "$dir"
+          git -C "$dir" fetch -q --depth 1 https://github.com/cheunjm/.github "$SCRIPTS_REF"
+          git -C "$dir" checkout -q FETCH_HEAD
+          # Validates the path and exports APP_JSON and VERSION_SCRIPT to later steps.
+          bash "$dir/scripts/version_prepare.sh"
+
       - name: Upgrade npm for trusted publishing
         if: ${{ inputs.trusted-publishing }}
         # OIDC publishing needs npm >= 11.5.1; Node 22 ships npm 10.
@@ -163,7 +189,7 @@ jobs:
           # committing through the GitHub API.
           github-token: ${{ steps.app-token.outputs.token }}
           push-with-git-cli: true
-          version-script: npx changeset version
+          version-script: ${{ inputs.app-json != '' && format('bash {0}', env.VERSION_SCRIPT) || 'npx changeset version' }}
           publish-script: ${{ inputs.publish != '' && inputs.publish || (inputs.tag && 'npx changeset git-tag' || '') }}
           pr-title: ${{ inputs.title }}
           commit-message: ${{ inputs.title }}
