@@ -1,5 +1,15 @@
 # .github
 
+## 1.4.0
+
+### Minor Changes
+
+- [#161](https://github.com/cheunjm/.github/pull/161) [`6586952`](https://github.com/cheunjm/.github/commit/65869528b170695e04b413701a5df533bf582f2d) Thanks [@cheunjm](https://github.com/cheunjm)! - Add migration contract guard (`block_destructive`, `migration_paths`) and the `app-json` version sync for the Version PR.
+
+### Patch Changes
+
+- [#163](https://github.com/cheunjm/.github/pull/163) [`4650516`](https://github.com/cheunjm/.github/commit/46505165e508f2980c79c9d4508853edc4348d54) Thanks [@cheunjm](https://github.com/cheunjm)! - `openwiki-update.yml`: when the OpenWiki planner exits without a plan (a model flake), the run retries once from a clean `openwiki/` instead of failing.
+
 ## 1.3.0
 
 ### Minor Changes
