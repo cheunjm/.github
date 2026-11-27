@@ -93,10 +93,12 @@ Each stage is one PR per repo it touches. In `.github`, a stage may be a small s
 
    Before any repo gets its ruleset, `openwiki-update` must open its PRs with the arami-bot App token and drop `[skip ci]`; otherwise `ci / gate` never reports on wiki PRs and they wait forever (D31.3). After merge, apply that repo's ruleset, once Pro is active. Done when every repo reports `ci / gate` on a PR, has no `@main` reference to `.github`, and its ruleset blocks a merge while `ci / gate` is red.
 4. **CD.**
-   - **Spike first:** check whether `eas build --local` plus `eas upload` records the fingerprint in EAS. If not, the fingerprint lookup uses GitHub deployment records (D22.6).
-   - **`.github`:** build `cd` and its internal blocks, add the `dry_run` fixture job, and port `e2e-maestro` Android to macOS.
-   - **starlog, then arami, then ui:** in each, replace the EAS, web and Supabase workflows with one `cd.yml` caller, register a `mac-studio` runner if missing, and sync secrets. Then, per repo:
-     - **starlog:** its inline Android e2e moves to `e2e-maestro`.
+   - **Spike (done 2026-11-27):** `eas upload --fingerprint <hash>` records the hash on a local build and `eas build:list --fingerprint-hash <hash>` finds it, so no GitHub deployment records are needed (D22.6). Uploaded builds carry no profile or channel, but `eas fingerprint:generate -e <profile>` differs per profile (arami Android: develop `7fe9c69…`, master `8f391fc…`), so the hash alone separates environments. `cd` must pass the hash it generated for the same profile; today's uploads pass none.
+   - **`.github`:** build `cd` and its internal blocks, add the `dry_run` fixture job, and add the two-slot Studio lock to `e2e-maestro` and the EAS block (D37). `e2e-maestro` Android already runs on macOS (D36, v1.2.0).
+   - **Already done (D38):** arami and starlog have the `release-candidate` caller, and their develop builds and web deploys run only from prerelease tags.
+   - **starlog, then arami, then ui, then give-and-take:** in each, replace the EAS, web and Supabase workflows with one `cd.yml` caller, register a `mac-studio` runner if missing, and sync secrets. Then, per repo:
+     - **starlog:** its inline Android e2e moves to `e2e-maestro` on `mac-studio-starlog-android` and `-ios`, with per-platform Supabase ports outside 54xxx–57xxx.
+     - **give-and-take:** first CD (it ships by hand today): a `mac-studio` runner for EAS, GitHub Environments, Doppler and Vercel per environment, `release.yml` on `@v1`, and a starter Maestro suite on `mac-studio-giveandtake-android` and `-ios`.
      - **arami:** its native e2e caller uses the Studio for both platforms. The Supabase target is switched on only after a `dry_run` shows the local and remote migration history match (D23).
      - **ui:** moves to the fingerprint `runtimeVersion` and the clean-tag trigger, moves to one Vercel project per environment, and drops `stage`, Chromatic and contrast (D20, D21). It turns on `storybook: true` with new `ui-storybook-develop` and `ui-storybook-master` Vercel projects (D24).
 
