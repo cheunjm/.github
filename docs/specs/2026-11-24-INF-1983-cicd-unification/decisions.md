@@ -491,11 +491,24 @@ D20–D23 came from the builder check on 2026-11-24.
 - **Choice:**
   - **Version:** `app.json` `expo.version` equals `package.json` `version`, written by the Version PR. Develop builds use `X.Y.Z` (stores accept no prerelease suffix), set in CI only. Build numbers are EAS remote and auto-incremented.
   - **App step:** one checkbox. Per platform, if a build of the current fingerprint already exists in that environment, the OTA is published first, so existing users update now. Then a new build is always made and distributed: develop to Firebase and the sideload APK, production to the App Store, Play Store and Firebase.
-- **Risk:** if `version` were part of the fingerprint, every release would get a new runtime and existing users would stop receiving OTAs. Expo's `balanced` preset skips it; Task 1 verifies it in each app.
+- **Risk:** if `version` were part of the fingerprint, every release would get a new runtime and existing users would stop receiving OTAs. Expo's `balanced` preset skips it; Task 1 verifies it in each app. (It does not: each app adds `fingerprint.config.js`, see Verified.)
 - **Cost:** a Studio build per platform and a store review on every release.
 - **Proposed by:** human (one version, always submit, one app step), ai (OTA-first order)
 - **Chosen by:** human
 - **Impact:** high
+- **Verified (2026-11-27):** eas-cli 27.11.0, `fingerprint:generate -e <profile> --json`, run on a scratch checkout of each app's `main`. H1 is the `develop` fingerprint, H2 the same with `expo.version` set to `9.9.9`, H3 the `e2e-develop` profile (`extends: develop`; Android `buildType: apk`, iOS `simulator: true`). **Result: version check FAILED in all 6 (H1 != H2); e2e profile check passed in all 6.**
+  - **Version:** the only changed source is `expoConfig` (its `version` field). The `balanced` preset does not skip `ExpoConfigVersions` here (`@expo/fingerprint` 0.20.16 `DEFAULT_SOURCE_SKIPS`). Each app needs a `fingerprint.config.js` with `sourceSkips: DEFAULT_SOURCE_SKIPS | SourceSkips.ExpoConfigVersions`. With it, H2 equals H1 in all 6 (tested throwaway, not committed).
+  - **Test build:** `eas.json` is itself a fingerprint source (`easBuild`), so adding the `e2e-develop` profile changes every hash once, but `-e e2e-develop` and `-e develop` give the same hash on the same `eas.json` (H3 equals the `develop` hash of the edited file). The profile adds no difference. H3 is the hash after the profile is added; H1 is the hash before it.
+  - **Fix:** `fingerprint.config.js` adds `SourceSkips.ExpoConfigVersions` in each app ([starlog](https://github.com/cheunjm/starlog/pull/162), [arami](https://github.com/cheunjm/arami/pull/100), [give-and-take](https://github.com/cheunjm/give-and-take/pull/50)); H1 == H2 in all 6 with it. Adding the file changes each app's runtime once. `eas.json` is a fingerprint source too, so a test build must come from the same commit as the real build, so `cd`'s app job must build both from one checkout (Task 5).
+
+  | repo | platform | profile | H1 | H2 | H3 | result |
+  |---|---|---|---|---|---|---|
+  | starlog | android | develop | 819ad65ea892500f3dc7cd7d7f070313acff70e6 | 0a4ecbb37be8bc47f5c23f57a7b5eda1db6028d0 | 1cdd0de125f91b95ce5e0b9ffb88f7f38fa34097 | version FAIL; e2e OK |
+  | starlog | ios | develop | 68d68ff96c4c18b74d0b542454b46fc6beb38815 | 447f673039afe43dd6ea032575f2ac2692996c3f | 541b4899b3acbcc2b9025ebfbf721bd46af084c0 | version FAIL; e2e OK |
+  | arami | android | develop | 833671dc9afbc6efdbcf313884a91f0b6cff4fcc | 0a06c57cbc5948cd942e9e887330cd8ab5b27c8f | c8b5eded2dce2021886245ed560ceb0db36202fe | version FAIL; e2e OK |
+  | arami | ios | develop | b2b61af1a24c2266148054180eb7956e2370cf5f | 36d703c8ea07df8e37f22a489ffd744251268d89 | bdaa1c90cd4b4d677c8c76def7dea7616b48d2e9 | version FAIL; e2e OK |
+  | give-and-take | android | develop | 68b90a6f5aef38051bfeb266bf3101568926cd58 | 993a8ea821dca35c682c83a0faae6e617cae83b5 | 34fbff70026150174fc5ed3515414d50b2e9ae45 | version FAIL; e2e OK |
+  | give-and-take | ios | develop | fba291f13646ff474fd72586f5f2614f5f53a731 | 6abf646b13526f37936f512d5dcd7703b17431d7 | 4816ff359986ed15b0c44ca4818d8ff9c0d93ff3 | version FAIL; e2e OK |
 
 ## D45: e2e runs after deploy, against the deployed app
 - **Supersedes:** D33's trigger (the Version PR) and its enforcement, and D39.6's local e2e port blocks.
