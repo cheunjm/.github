@@ -78,6 +78,18 @@ class ScanTest(unittest.TestCase):
             with self.subTest(sql=sql):
                 self.assertEqual(cc.scan(diff_for("m/8.sql", [sql])), [])
 
+    def test_do_block_drop_flagged(self):
+        d = diff_for("m/9.sql", ["select 1;", "do $$ begin", "  alter table a drop column b;", "end $$;"], start=3)
+        self.assertEqual([(f, n) for f, n, _ in cc.scan(d)], [("m/9.sql", 4)])
+
+    def test_block_comment_prefix_flagged(self):
+        for lines in (["/* x */ drop table a;"], ["/* x", "y */", "drop table a;"], ["/* c */ alter table a drop b;"]):
+            with self.subTest(lines=lines):
+                self.assertEqual(len(cc.scan(diff_for("m/10.sql", lines))), 1)
+
+    def test_block_comment_text_not_flagged(self):
+        self.assertEqual(cc.scan(diff_for("m/11.sql", ["/* drop table a; */ select 1;", "/* alter", "table a drop b; */"])), [])
+
     def test_multiple_files_and_hunks(self):
         d = (diff_for("a.sql", ["drop table a;"]) +
              "diff --git a/b.sql b/b.sql\n--- a/b.sql\n+++ b/b.sql\n@@ -3,0 +4,1 @@\n+drop table b;\n"

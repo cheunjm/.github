@@ -179,7 +179,16 @@ jobs:
           cd "$work" || exit 1
           git init -q
           npm install --no-save --no-package-lock --no-audit --no-fund "@changesets/cli@$CLI_VERSION"
-          APP_JSON=app.json bash "$GITHUB_WORKSPACE/scripts/version_with_app_json.sh"
+          # Same path as the workflow: the prepare script exports APP_JSON and VERSION_SCRIPT
+          # (here to a fake GITHUB_ENV file), and the action then runs `bash $VERSION_SCRIPT`
+          # with that environment.
+          export GITHUB_ENV="$work/.github_env"
+          APP_JSON_INPUT=app.json bash "$GITHUB_WORKSPACE/scripts/version_prepare.sh"
+          set -a
+          # shellcheck source=/dev/null
+          . "$GITHUB_ENV"
+          set +a
+          bash "$VERSION_SCRIPT"
           pkg="$(node -p 'require("./package.json").version')"
           app="$(node -p 'require("./app.json").expo.version')"
           echo "package.json $pkg, app.json $app"

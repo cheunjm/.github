@@ -153,6 +153,7 @@ jobs:
         if: ${{ inputs.app-json != '' }}
         env:
           SCRIPTS_REF: ${{ inputs.scripts-ref }}
+          APP_JSON_INPUT: ${{ inputs.app-json }}
         run: |
           # scripts/version_with_app_json.sh runs `changeset version`, then keeps app.json in
           # step with package.json. It lives in cheunjm/.github (public), at `scripts-ref`
@@ -161,7 +162,8 @@ jobs:
           git init -q "$dir"
           git -C "$dir" fetch -q --depth 1 https://github.com/cheunjm/.github "$SCRIPTS_REF"
           git -C "$dir" checkout -q FETCH_HEAD
-          echo "VERSION_SCRIPT=$dir/scripts/version_with_app_json.sh" >> "$GITHUB_ENV"
+          # Validates the path and exports APP_JSON and VERSION_SCRIPT to later steps.
+          bash "$dir/scripts/version_prepare.sh"
 
       - name: Upgrade npm for trusted publishing
         if: ${{ inputs.trusted-publishing }}

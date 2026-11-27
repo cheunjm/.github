@@ -11,8 +11,9 @@ a migration with a `-- contract:` line but no changeset added by the PR gives
 this repo's package.json name `minor`.
 
 Matching is per statement and case-insensitive, on added lines only: comments
-(`--` to end of line, also inside a string literal) are stripped, the lines are
-joined and split on `;`. Allowed: DROP FUNCTION/POLICY/TRIGGER/INDEX and ALTER TABLE
+(`--` to end of line, also inside a string literal, and `/* */`) are stripped, the
+lines are joined and split on `;`, and the patterns are searched anywhere in a
+statement (so a DO $$ ... $$ body is caught). Allowed: DROP FUNCTION/POLICY/TRIGGER/INDEX and ALTER TABLE
 DROP CONSTRAINT/DEFAULT/NOT NULL/IDENTITY/EXPRESSION.
 """
 
@@ -22,8 +23,9 @@ import re
 import subprocess
 import sys
 
-DROP_OBJECT = re.compile(r"^DROP\s+(TABLE|VIEW|MATERIALIZED\s+VIEW)\b", re.IGNORECASE)
-ALTER_TABLE = re.compile(r"^ALTER\s+TABLE\b", re.IGNORECASE)
+DROP_OBJECT = re.compile(r"\bDROP\s+(TABLE|VIEW|MATERIALIZED\s+VIEW)\b", re.IGNORECASE)
+ALTER_TABLE = re.compile(r"\bALTER\s+TABLE\b", re.IGNORECASE)
+BLOCK_COMMENT = re.compile(r"/\*.*?(\*/|\Z)", re.DOTALL)
 # Inside ALTER TABLE: DROP COLUMN (with or without the COLUMN keyword) but not the
 # DROP CONSTRAINT / DEFAULT / NOT NULL / IDENTITY / EXPRESSION sub-commands.
 ALTER_DROP = re.compile(r"\bDROP\s+(?!CONSTRAINT\b|DEFAULT\b|NOT\s+NULL\b|IDENTITY\b|EXPRESSION\b)\S", re.IGNORECASE)
@@ -38,43 +40,39 @@ CHANGESET_ENTRY = re.compile(r"""^\s*["']?(.+?)["']?\s*:\s*(major|minor|patch)\s
 
 
 def is_contract(statement):
-    if DROP_OBJECT.match(statement):
+    """Patterns are searched anywhere in the statement, so DO $$ ... $$ bodies count."""
+    if DROP_OBJECT.search(statement):
         return True
-    if ALTER_TABLE.match(statement):
-        return bool(ALTER_DROP.search(statement) or ALTER_RENAME.search(statement) or ALTER_TYPE.search(statement))
+    m = ALTER_TABLE.search(statement)
+    if m:
+        rest = statement[m.start():]
+        return bool(ALTER_DROP.search(rest) or ALTER_RENAME.search(rest) or ALTER_TYPE.search(rest))
     return False
 
 
 def statements(lines):
-    """Split (lineno, text) pairs into (start_line, statement) on `;`, after stripping `--` comments.
+    """Split (lineno, text) pairs into (start_line, statement) on `;`.
 
-    A statement is flushed at a gap in line numbers, so separate hunks never merge.
+    Comments (`--` to end of line, `/* */` across lines) are blanked first. Lines are joined
+    per run of consecutive line numbers, so separate hunks never merge.
     """
-    out = []
-    parts = []
-    start = None
-    prev = None
-
-    def flush():
-        nonlocal parts, start
-        stmt = " ".join(" ".join(parts).split())
-        if stmt:
-            out.append((start, stmt))
-        parts, start = [], None
-
+    groups = []
     for no, text in lines:
-        if prev is not None and no != prev + 1:
-            flush()
-        prev = no
-        segments = text.split("--", 1)[0].split(";")
-        for i, seg in enumerate(segments):
-            if seg.strip():
-                if start is None:
-                    start = no
-                parts.append(seg.strip())
-            if i < len(segments) - 1:
-                flush()
-    flush()
+        if groups and groups[-1][-1][0] + 1 == no:
+            groups[-1].append((no, text))
+        else:
+            groups.append([(no, text)])
+    out = []
+    for group in groups:
+        text = "\n".join(t.split("--", 1)[0] for _, t in group)
+        text = BLOCK_COMMENT.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), text)
+        offset = 0
+        for seg in text.split(";"):
+            stripped = seg.lstrip()
+            if stripped.strip():
+                first = offset + len(seg) - len(stripped)
+                out.append((group[0][0] + text.count("\n", 0, first), " ".join(stripped.split())))
+            offset += len(seg) + 1
     return out
 
 
