@@ -500,6 +500,8 @@ D20–D23 came from the builder check on 2026-11-24.
   - **Version:** the only changed source is `expoConfig` (its `version` field). The `balanced` preset does not skip `ExpoConfigVersions` here (`@expo/fingerprint` 0.20.16 `DEFAULT_SOURCE_SKIPS`). Each app needs a `fingerprint.config.js` with `sourceSkips: DEFAULT_SOURCE_SKIPS | SourceSkips.ExpoConfigVersions`. With it, H2 equals H1 in all 6 (tested throwaway, not committed).
   - **Test build:** `eas.json` is itself a fingerprint source (`easBuild`), so adding the `e2e-develop` profile changes every hash once, but `-e e2e-develop` and `-e develop` give the same hash on the same `eas.json` (H3 equals the `develop` hash of the edited file). The profile adds no difference. H3 is the hash after the profile is added; H1 is the hash before it.
 
+  - **Fix:** `fingerprint.config.js` adds `SourceSkips.ExpoConfigVersions` in each app ([starlog](https://github.com/cheunjm/starlog/pull/162), [arami](https://github.com/cheunjm/arami/pull/100), [give-and-take](https://github.com/cheunjm/give-and-take/pull/50)); H1 == H2 in all 6 with it. Adding the file changes each app's runtime once. `eas.json` is a fingerprint source too, so a test build must come from the same commit as the real build, which `cd`'s app job does by building both from one checkout.
+
   | repo | platform | profile | H1 | H2 | H3 | result |
   |---|---|---|---|---|---|---|
   | starlog | android | develop | 819ad65ea892500f3dc7cd7d7f070313acff70e6 | 0a4ecbb37be8bc47f5c23f57a7b5eda1db6028d0 | 1cdd0de125f91b95ce5e0b9ffb88f7f38fa34097 | version FAIL; e2e OK |
