@@ -18,7 +18,9 @@ jobs:
     uses: ./.github/workflows/ci.yml
     with:
       preset: shell
-      test_command: python3 -m unittest scripts/test_studio_lock.py scripts/test_release_gate.py
+      test_command: >-
+        python3 -m unittest scripts/test_studio_lock.py scripts/test_release_gate.py
+        scripts/test_contract_check.py scripts/test_sync_app_json.py
       # Pinned: @latest lets a new release change what blocks every PR.
       lint_command: >-
         go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 &&
@@ -93,3 +95,83 @@ jobs:
       - name: Lock dir is empty
         run: |
           [ -z "$(ls -A "$HOME/Library/Caches/cheunjm-studio-lock")" ]
+
+  # Wiring of db-migration-check: base_ref is the empty tree, so every fixture file counts as added.
+  migrations-additive:
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: ./.github/workflows/db-migration-check.yml
+    with:
+      block_destructive: true
+      scripts_ref: ${{ github.event.pull_request.head.sha }}
+      base_ref: 4b825dc642cb6eb9a060e54bf8d69288fbee4904
+      migration_paths: fixtures/migrations/additive/migrations/*.sql
+
+  migrations-marked:
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: ./.github/workflows/db-migration-check.yml
+    with:
+      block_destructive: true
+      scripts_ref: ${{ github.event.pull_request.head.sha }}
+      base_ref: 4b825dc642cb6eb9a060e54bf8d69288fbee4904
+      migration_paths: fixtures/migrations/marked/migrations/*.sql
+
+  # The failing cases cannot go through `uses:` (a called workflow's failure cannot be
+  # inverted), so each case is committed into a throwaway repo and the script is run on it;
+  # a case marked `fail` must exit non-zero with the expected message.
+  migration-guards:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {case: additive, command: scan, expect: pass}
+          - {case: destructive, command: scan, expect: fail, message: 'migrations/1.sql:1 is a contract change: add "-- contract: safe after vX.Y.Z" and a minor changeset'}
+          - {case: marked, command: scan, expect: pass}
+          - {case: contract-patch, command: changeset, expect: fail, message: a contract migration needs a minor changeset}
+          - {case: contract-minor, command: changeset, expect: pass}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run ${{ matrix.command }} on ${{ matrix.case }} (expect ${{ matrix.expect }})
+        env:
+          CASE: ${{ matrix.case }}
+          COMMAND: ${{ matrix.command }}
+          EXPECT: ${{ matrix.expect }}
+          MESSAGE: ${{ matrix.message }}
+        run: |
+          script="$PWD/scripts/contract_check.py"
+          fixture="$PWD/fixtures/migrations/$CASE"
+          work="$(mktemp -d)"
+          git -C "$work" init -q -b main
+          git -C "$work" -c user.name=t -c user.email=t@t commit -q --allow-empty -m base
+          base="$(git -C "$work" rev-parse HEAD)"
+          cp -R "$fixture/." "$work/"
+          git -C "$work" add -A
+          git -C "$work" -c user.name=t -c user.email=t@t commit -q -m case
+          cd "$work" || exit 1
+          rc=0
+          python3 "$script" "$COMMAND" --base "$base" --head HEAD --paths 'migrations/**' > out.txt 2>&1 || rc=$?
+          cat out.txt
+          if [ "$EXPECT" = pass ]; then
+            [ "$rc" -eq 0 ]
+          else
+            [ "$rc" -eq 1 ] && grep -qF -- "$MESSAGE" out.txt
+          fi
+
+  # Runs the version sync on a temp copy: app.json must land on the package.json version.
+  app-json-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Bump a copy of fixtures/expo
+        run: |
+          work="$(mktemp -d)"
+          cp fixtures/expo/package.json fixtures/expo/app.json "$work/"
+          cd "$work" || exit 1
+          sed -i 's/"version": "1.0.0"/"version": "2.3.4"/' package.json
+          python3 "$GITHUB_WORKSPACE/scripts/sync_app_json.py" app.json
+          [ "$(python3 -c 'import json; print(json.load(open("app.json"))["expo"]["version"])')" = "2.3.4" ]
+          cat app.json

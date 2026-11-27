@@ -19,6 +19,29 @@ on:
         required: false
         type: boolean
         default: false
+      block_destructive:
+        description: >-
+          Fail the job when an added line drops a table or column, renames a table
+          or column, or changes a column type, in a file with no line
+          `-- contract: safe after vX.Y.Z` (expand/contract, INF-1983 D42).
+          Pair it with `migration_paths` on the changeset check so such a PR also
+          needs a minor changeset.
+        required: false
+        type: boolean
+        default: false
+      base_ref:
+        description: >-
+          Commit or tree to diff against. Default: the PR base SHA. A non-empty
+          value also skips the sticky PR comment (the self-test scans fixtures
+          against the empty tree).
+        required: false
+        type: string
+        default: ""
+      scripts_ref:
+        description: "Ref of cheunjm/.github to fetch the guard scripts from (tag, branch or SHA). Default v1; the self-test passes the PR head."
+        required: false
+        type: string
+        default: "v1"
       runner:
         description: "Runner label (e.g., mac-studio for the self-hosted runner)"
         required: false
@@ -42,7 +65,8 @@ jobs:
       - name: Scan migrations
         env:
           GH_TOKEN: ${{ github.token }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ inputs.base_ref != '' && inputs.base_ref || github.event.pull_request.base.sha }}
+          COMMENT: ${{ inputs.base_ref == '' }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
           MIGRATION_PATHS: ${{ inputs.migration_paths }}
@@ -135,7 +159,7 @@ jobs:
 
           cat "$REPORT" >> "$GITHUB_STEP_SUMMARY"
 
-          if [ -n "${PR_NUMBER:-}" ]; then
+          if [ -n "${PR_NUMBER:-}" ] && [ "$COMMENT" = "true" ]; then
             # Only reuse a comment authored by this workflow's own identity, so a
             # user-planted marker comment cannot hijack or block the report.
             existing=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate \
@@ -157,3 +181,24 @@ jobs:
             echo "::error::$critical CRITICAL migration pattern(s) found"
             exit 1
           fi
+
+      - name: Fetch guard scripts
+        if: ${{ inputs.block_destructive }}
+        env:
+          SCRIPTS_REF: ${{ inputs.scripts_ref }}
+        run: |
+          # The scripts live in cheunjm/.github (public), at `scripts_ref` (default v1),
+          # so callers carry no copy.
+          dir="$(mktemp -d "$RUNNER_TEMP/cheunjm-github.XXXXXX")"
+          git init -q "$dir"
+          git -C "$dir" fetch -q --depth 1 https://github.com/cheunjm/.github "$SCRIPTS_REF"
+          git -C "$dir" checkout -q FETCH_HEAD
+          echo "GUARD_SCRIPTS=$dir/scripts" >> "$GITHUB_ENV"
+
+      - name: Block unmarked contract changes
+        if: ${{ inputs.block_destructive }}
+        env:
+          BASE_SHA: ${{ inputs.base_ref != '' && inputs.base_ref || github.event.pull_request.base.sha }}
+          MIGRATION_PATHS: ${{ inputs.migration_paths }}
+        run: |
+          python3 "$GUARD_SCRIPTS/contract_check.py" scan --base "$BASE_SHA" --head HEAD --paths "$MIGRATION_PATHS"

@@ -26,6 +26,20 @@ on:
         required: false
         type: string
         default: ""
+      migration_paths:
+        description: >-
+          Newline-separated git pathspec globs for SQL migrations (e.g.
+          `supabase/migrations/**`). When the PR adds or changes a migration with a
+          `-- contract:` line, one of its new changesets must give this repo's
+          package `minor` (INF-1983 D42, D43). Empty skips the check.
+        required: false
+        type: string
+        default: ""
+      scripts_ref:
+        description: "Ref of cheunjm/.github to fetch the guard scripts from (tag, branch or SHA). Default v1."
+        required: false
+        type: string
+        default: "v1"
       changesets-version:
         description: "Pinned @changesets/cli version"
         required: false
@@ -80,3 +94,18 @@ jobs:
           # Parses every changeset and rejects unknown package names, so a bad
           # file fails here and not later in the Version Packages PR.
           npx --yes "@changesets/cli@$CHANGESETS_VERSION" status --since="origin/$BASE_REF"
+
+      - name: Require a minor changeset for contract migrations
+        if: ${{ inputs.migration_paths != '' }}
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          MIGRATION_PATHS: ${{ inputs.migration_paths }}
+          SCRIPTS_REF: ${{ inputs.scripts_ref }}
+        run: |
+          # The script lives in cheunjm/.github (public), at `scripts_ref` (default v1).
+          dir="$(mktemp -d "$RUNNER_TEMP/cheunjm-github.XXXXXX")"
+          git init -q "$dir"
+          git -C "$dir" fetch -q --depth 1 https://github.com/cheunjm/.github "$SCRIPTS_REF"
+          git -C "$dir" checkout -q FETCH_HEAD
+          base="$(git merge-base "origin/$BASE_REF" HEAD)"
+          python3 "$dir/scripts/contract_check.py" changeset --base "$base" --head HEAD --paths "$MIGRATION_PATHS"
