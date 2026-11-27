@@ -1,0 +1,68 @@
+name: Release production
+
+# The production button (INF-1983 D41, D46): copy to .github/workflows/release-production.yml
+# in an app repo. Enter the vX.Y.Z tag the Version PR merge created. cd runs the master gate
+# first: the tag must be on main, ci / gate green on it, and its code must match the commit
+# develop last deployed (and that commit must have a green develop e2e when e2e is ticked).
+# For a native release, press once with web off and again with only web after the stores approve.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, vX.Y.Z (the Version PR's release)"
+        type: string
+        required: true
+      backend:
+        description: "Deploy the Supabase backend"
+        type: boolean
+        default: true # false when the repo has no supabase/
+      app:
+        description: "Build, distribute and submit the app"
+        type: boolean
+        default: true # false for web-only repos
+      web:
+        description: "Deploy the web build to Vercel"
+        type: boolean
+        default: true # false when the repo has no web build
+      storybook:
+        description: "Deploy Storybook"
+        type: boolean
+        default: false # true for repos with Storybook
+      e2e:
+        description: "Run the smoke flows against production"
+        type: boolean
+        default: true
+      ignore_pending_migrations:
+        description: "With backend off, deploy even though migrations are missing on the remote"
+        type: boolean
+        default: false
+
+# One production deploy at a time; a second press waits instead of cancelling a running one.
+concurrency:
+  group: cd-master
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  cd:
+    uses: cheunjm/.github/.github/workflows/cd.yml@v1
+    permissions:
+      contents: read
+      statuses: write
+      checks: read
+    secrets: inherit
+    with:
+      environment: master
+      tag: ${{ inputs.tag }}
+      backend: ${{ inputs.backend }}
+      app: ${{ inputs.app }}
+      web: ${{ inputs.web }}
+      storybook: ${{ inputs.storybook }}
+      e2e: ${{ inputs.e2e }}
+      ignore_pending_migrations: ${{ inputs.ignore_pending_migrations }}
+      store_submit: true
+      # firebase_groups: "internal"
+      # slack_channel: "C0123456789"
