@@ -1,5 +1,17 @@
 # .github
 
+## 1.3.0
+
+### Minor Changes
+
+- [#160](https://github.com/cheunjm/.github/pull/160) [`9efb021`](https://github.com/cheunjm/.github/commit/9efb02108853cb48b20a5d7ccf3bbc0f0cd39ec8) Thanks [@cheunjm](https://github.com/cheunjm)! - `e2e-maestro.yml` takes a Studio slot on macOS and gains `app-artifact` (install a same-run build), `include-tags`, `environment` and the `E2E_TEST_ACCOUNTS` secret.
+
+- [#158](https://github.com/cheunjm/.github/pull/158) [`88ab46a`](https://github.com/cheunjm/.github/commit/88ab46a583b12d5a41a2de0c34794a8222053e46) Thanks [@cheunjm](https://github.com/cheunjm)! - Add the `studio-lock` and `release-gate` composite actions for the CD stage.
+
+### Patch Changes
+
+- [#162](https://github.com/cheunjm/.github/pull/162) [`ba76471`](https://github.com/cheunjm/.github/commit/ba7647108c57ca7953fb5ef42e4d0de084d61187) Thanks [@cheunjm](https://github.com/cheunjm)! - `openwiki-update.yml`: the publish job bases the docs PR on the latest default branch instead of the triggering commit, so a queued run no longer opens a PR that conflicts with the docs the previous run merged.
+
 ## 1.2.1
 
 ### Patch Changes
