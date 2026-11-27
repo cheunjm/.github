@@ -541,3 +541,17 @@ D20–D23 came from the builder check on 2026-11-24.
 - **Proposed by:** human (no rc), ai (statuses on the commit, gate walk)
 - **Chosen by:** human
 - **Impact:** high
+
+## D47: The gate proves a develop deploy from the release run's jobs, not commit statuses
+- **Refines:** D46's "proof on the commit" (stage-4 rulings R17 → R20).
+- **Problem:** three security reviews showed commit statuses can't carry the proof. Any workflow whose job token has `statuses: write` (including one on a same-repo PR branch) posts as `github-actions[bot]`; a status can borrow a genuine run's URL on the same commit; and a status pointing at a nonexistent run blocks every release (fail closed → denial of service).
+- **Options:** A: statuses plus provenance via `target_url`; B: statuses from a dedicated GitHub App only the release workflow holds; C: read the release workflow's own runs and jobs through the Actions API.
+- **Choice:** C.
+  - **Develop deploy:** for each commit in the release's first-parent history (at most 100), a `workflow_dispatch` run of `.github/workflows/release-candidate.yml` on the default branch with `head_sha` equal to the commit, whose latest-attempt job `… / develop-status` concluded `success`. With e2e, the same for `… / e2e-status`. The run's overall conclusion is not required (a Storybook failure fails the run while the deploy stands, R14).
+  - **Dry runs never count:** `cd.yml` skips `develop-status` and `e2e-status` when `dry_run` is set, and a skipped job is not a success.
+  - **Statuses stay** as visible markers on commits (`cd/develop`, `cd/e2e-develop`) but the gate never reads them.
+  - **Token:** the production caller grants `actions: read`. API errors fail closed with `could not verify develop deploys on <sha7>: press the release button first`.
+- **Rationale:** only a change to `release-candidate.yml` merged to the default branch can create a qualifying job, which is the same trust boundary as the code itself; B would add an App and key to manage for the same result.
+- **Proposed by:** ai (after security review)
+- **Chosen by:** ai (ruling R20; Jace to confirm)
+- **Impact:** high
