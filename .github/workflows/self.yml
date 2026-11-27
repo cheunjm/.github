@@ -252,7 +252,8 @@ jobs:
 
   # This repo's own latest release has no develop deploy behind it, so the master gate must
   # refuse it. The called workflow cannot be inverted from here, so cd.yml's expect_failure
-  # does it: plan passes only when the gate failed with the D46 hint.
+  # does it: plan passes only when the gate failed. This repo's checks run on pull requests
+  # only, so a release commit has no `ci / gate` and the gate stops at its second check.
   cd-master-gate:
     needs: latest-tag
     permissions:
@@ -267,7 +268,7 @@ jobs:
       ignore_pending_migrations: true
       eas_runner: ubuntu-latest
       scripts_ref: ${{ github.event.pull_request.head.sha }}
-      expect_failure: "press the release button first"
+      expect_failure: "`ci / gate` is not green on"
 
   # backend is off and the fixture has a migration the stub lists as missing remotely.
   cd-pending-migrations:
