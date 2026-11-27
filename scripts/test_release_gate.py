@@ -179,18 +179,12 @@ class ReleaseGateTest(unittest.TestCase):
         self.assertIn(f"code differs from the last develop deploy {self.dev_sha[:7]}: press the release button first", err)
 
 
-
-
-
     def test_changelog_and_changeset_ignored(self):
         self.write("CHANGELOG.md", "# log\nmore\n")
         self.write(".changeset/a.md", "---\n---\n")
         self.commit("docs")
         code, err = self.run_gate()
         self.assertEqual(code, 0, err)
-
-
-
 
 
     def test_not_on_main_fails(self):
@@ -257,7 +251,6 @@ class ReleaseGateTest(unittest.TestCase):
         self.assertEqual(code, 0, err)
 
 
-
     def test_missing_e2e_on_tested_commit_fails(self):
         self.bump()
         code, err = self.run_gate(require_e2e=True)
@@ -288,19 +281,10 @@ class ReleaseGateTest(unittest.TestCase):
         self.assertIn(f"{second[:7]} has no green develop e2e", err)
 
 
-
     def assert_no_develop_deploy(self):
         code, err = self.run_gate()
         self.assertEqual(code, 1)
         self.assertIn("no develop deploy before", err)
-
-
-
-
-
-
-
-
 
 
     def test_e2e_job_on_tested_commit_passes(self):
@@ -337,6 +321,18 @@ class ReleaseGateTest(unittest.TestCase):
         self.deploy(self.dev_sha, path=".github/workflows/release-candidate.yml@refs/heads/main")
         code, err = self.run_gate()
         self.assertEqual(code, 0, err)
+
+    def test_path_lookalikes_ignored(self):
+        for path in (".github/workflows/release-candidate.yml.bak", ".github/workflows/release-candidate.yml2",
+                     ".github/workflows/release-candidate.yml@"[:-1] + "x"):
+            self.runs.clear()
+            self.deploy(self.dev_sha, path=path)
+            self.assert_no_develop_deploy()
+
+    def test_skipped_develop_status_job_does_not_count(self):
+        self.runs.clear()
+        self.deploy(self.dev_sha, "skipped")
+        self.assert_no_develop_deploy()
 
     def test_run_on_other_branch_ignored(self):
         self.runs.clear()

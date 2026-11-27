@@ -55,6 +55,11 @@ class UnverifiedDeploys(Exception):
     pass
 
 
+def run_path(run):
+    """The run's workflow file; GitHub may append `@refs/...`."""
+    return (run.get("path") or "").split("@", 1)[0]
+
+
 class Deploys:
     """Develop deploys proven by the jobs of release-button runs, never by commit statuses.
 
@@ -96,7 +101,7 @@ class Deploys:
         runs = [
             r for r in out.get("workflow_runs", [])
             if r.get("event") == "workflow_dispatch"
-            and (r.get("path") or "").startswith(RELEASE_WORKFLOW)
+            and run_path(r) == RELEASE_WORKFLOW
             and r.get("head_sha") == sha
             and r.get("head_branch") == branch
         ]
