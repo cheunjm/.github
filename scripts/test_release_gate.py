@@ -255,6 +255,28 @@ class ReleaseGateTest(unittest.TestCase):
         self.e2e("failure", created_at="2026-01-01T00:00:00Z")
         code, err = self.run_gate(require_e2e=True)
         self.assertEqual(code, 0, err)
+        status_paths = [p for p in self.paths if "/statuses" in p]
+        self.assertTrue(all("per_page=100" in p for p in status_paths), status_paths)
+        self.assertTrue(any(f"commits/{self.dev_sha}/statuses" in p for p in status_paths[1:]), status_paths)
+        self.assertIn(f"commits/{self.dev_sha}/statuses", status_paths[-1])
+
+    def test_develop_failure_after_success_fails(self):
+        self.deploy(self.dev_sha, "failure", created_at="2026-01-02T00:00:00Z")
+        code, err = self.run_gate()
+        self.assertEqual(code, 1)
+        self.assertIn("no develop deploy before", err)
+
+    def test_second_parent_develop_status_ignored(self):
+        self.statuses.clear()
+        self.git("checkout", "-q", "-b", "side")
+        self.write("side.js", "side\n")
+        self.commit("side")
+        self.deploy(self.sha())
+        self.git("checkout", "-q", "main")
+        self.git("merge", "-q", "--no-ff", "-m", "merge", "side")
+        code, err = self.run_gate()
+        self.assertEqual(code, 1)
+        self.assertIn(f"no develop deploy before {self.sha()[:7]}", err)
 
     def test_e2e_only_on_other_commit_fails(self):
         self.write("src.js", "two\n")

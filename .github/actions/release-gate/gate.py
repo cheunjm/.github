@@ -98,9 +98,9 @@ def strict_eq(a, b):
     return a == b
 
 
-def version_only(cwd, rc, sha, path, version):
+def version_only(cwd, tested, sha, path, version):
     try:
-        old = show_json(cwd, rc, path)
+        old = show_json(cwd, tested, path)
         new = show_json(cwd, sha, path)
         old_doc, old_vals = strip_version(old, VERSION_FILES[path])
         new_doc, new_vals = strip_version(new, VERSION_FILES[path])
@@ -116,16 +116,16 @@ def version_only(cwd, rc, sha, path, version):
     return True
 
 
-def code_differs(cwd, rc, sha, version):
+def code_differs(cwd, tested, sha, version):
     out = git(
         cwd, "diff", "--no-renames", "--name-status", "-z", "--no-ext-diff", "--no-textconv",
-        "--no-color", rc, sha,
+        "--no-color", tested, sha,
     ).stdout
     parts = out.split("\0")
     for status, path in zip(parts[0::2], parts[1::2]):
         if path == "CHANGELOG.md" or path.startswith(".changeset/"):
             continue
-        if path in VERSION_FILES and status == "M" and version_only(cwd, rc, sha, path, version):
+        if path in VERSION_FILES and status == "M" and version_only(cwd, tested, sha, path, version):
             continue
         return True
     return False

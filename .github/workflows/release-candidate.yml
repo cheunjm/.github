@@ -202,13 +202,17 @@ jobs:
           NODE_AUTH_TOKEN: ${{ !inputs.trusted_publishing && github.token || '' }}
         run: |
           name=$(node -p 'require("./package.json").name')
+          err_file=$(mktemp)
           status=0
-          out=$(npm view "$name" versions --json 2>&1) || status=$?
+          out=$(npm view "$name" versions --json 2>"$err_file") || status=$?
           if [ "$status" -ne 0 ]; then
-            case "$out" in
-              *E404*) out='[]' ;;
-              *) echo "::error::npm view $name failed: $out"; exit "$status" ;;
-            esac
+            if grep -q E404 "$err_file" || printf '%s' "$out" | grep -q E404; then
+              out='[]'
+            else
+              echo "::error::npm view $name failed (exit $status)"
+              cat "$err_file" >&2
+              exit "$status"
+            fi
           fi
           # shellcheck disable=SC2016 # JavaScript in single quotes, not shell
           n=$(VERSIONS="$out" node -e '
