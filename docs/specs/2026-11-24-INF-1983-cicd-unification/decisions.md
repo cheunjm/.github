@@ -385,3 +385,19 @@ D20–D23 came from the builder check on 2026-11-24.
 - **Chosen by:** human
 - **Impact:** low
 
+
+## D36: Native e2e runs on per-platform Studio runners
+- **Refines:** D33's runner choice. Its trigger and enforcement stand.
+- **Problem:** Porting Android to the Studio (D33) with one `mac-studio-<repo>` runner per repo makes Android wait for iOS, roughly doubling each release's e2e. A prototype also found cold emulator boots of about 5 minutes, and two of three boots timed out while the Studio's load average was 560–900.
+- **Options:** A: one runner per repo, Android after iOS, with a snapshot; B: keep Android on hosted Linux (supersede D33 for Android); C: a runner per platform per app repo, plus a quick-boot snapshot.
+- **Choice:** C.
+  - **Runners:** each app repo (arami, starlog, give-and-take) has `mac-studio-<repo>-android` (label `mac-studio-android`) and `mac-studio-<repo>-ios` (label `mac-studio-ios`). `e2e-maestro.yml` defaults `android-runner` and `ios-runner` to those labels. `mac-studio-<repo>` stays for EAS and other Studio work. `web-runner` stays `ubuntu-latest` (the ruling recorded while executing D33).
+  - **Emulator:** the macOS Android job uses the host SDK and one AVD per runner under `~/Library/Android/e2e`. The first run saves a quick-boot snapshot; later runs load it and never save over it. A rejected snapshot means a cold boot and a rebuild on the next run. Each job picks a free emulator port and sets `ANDROID_SERIAL`, and the shared adb server is started outside the job's process tracking.
+  - **Backends:** a repo's iOS and Android jobs now run at the same time on one Docker, so each caller gives each platform its own local Supabase project id and ports.
+  - **Fallback:** a caller can pass a Linux `android-runner` (for example `ubuntu-latest`) to return to the KVM path.
+- **Rationale:** Jace chose to run the platforms side by side on the Studio. The snapshot targets the boot cost, and per-runner AVDs and ports let repos share the host.
+- **Risks:** CPU and memory contention with Xcode builds and Ollama, and disk (about 29 GB free when chosen; each AVD with its snapshot takes several GB). Revisit if boots keep timing out.
+- **Verified:** arami run 45933750356 ran both suites side by side: the first Android boot took 57 s and saved the snapshot, and the snapshot boot took 7 s. The earlier timeouts came from swap: Ollama held `llama3.2:1b` at a 128k context (12 GB, never unloaded), now capped at 8k (dotclaw#386). The Studio's dev Supabase stacks hold ports 54xxx–57xxx, so callers put the e2e stacks outside that block (arami: 5832x iOS, 5842x Android).
+- **Proposed by:** human (runners per platform), ai (snapshot, ports, backend isolation)
+- **Chosen by:** human
+- **Impact:** med

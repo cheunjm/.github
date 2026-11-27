@@ -7,8 +7,13 @@ name: E2E (Maestro)
 # E2E_PLATFORM set to android, ios or web. The caller supplies how to set up,
 # build, serve and test its own app.
 #
-# iOS runs on the Mac Studio (`ios-runner`, default mac-studio) because it needs
-# Xcode and Docker; hosted macOS has no Docker. Fork PRs never reach it.
+# Android and iOS run on the Mac Studio (INF-1983 D36): each app repo registers
+# a `mac-studio-<repo>-android` and a `mac-studio-<repo>-ios` runner, labelled
+# mac-studio-android and mac-studio-ios, so the two platforms run side by side.
+# iOS needs Xcode and Docker; hosted macOS has no Docker. On macOS the Android
+# job boots an arm64 emulator from a per-runner AVD that keeps a quick-boot
+# snapshot between runs; on a Linux `android-runner` it keeps the KVM path.
+# Fork PRs never reach the Studio.
 #
 # A new push never cancels a running suite: the run finishes and only the newest
 # pending push waits behind it.
@@ -75,11 +80,12 @@ on:
         type: string
         default: "3.2.0"
       android-runner:
+        description: "mac-studio-android (the Studio), or a hosted Linux label such as ubuntu-latest for the KVM emulator"
         type: string
-        default: "ubuntu-latest"
+        default: "mac-studio-android"
       ios-runner:
         type: string
-        default: "mac-studio"
+        default: "mac-studio-ios"
       web-runner:
         type: string
         default: "ubuntu-latest"
@@ -87,8 +93,9 @@ on:
         type: number
         default: 34
       android-arch:
+        description: "Emulator ABI. Empty picks the runner's: arm64-v8a on macOS, x86_64 on Linux"
         type: string
-        default: "x86_64"
+        default: ""
       android-profile:
         type: string
         default: "pixel_6"
@@ -122,16 +129,67 @@ env:
 jobs:
   android:
     name: android
-    if: contains(inputs.platforms, 'android')
+    # The default runner is self-hosted: only same-repo branches and manual runs
+    # reach the Studio.
+    if: >-
+      contains(inputs.platforms, 'android') &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ${{ inputs.android-runner }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     concurrency:
       group: e2e-maestro-android-${{ github.repository }}-${{ github.event.pull_request.number || github.ref }}
       cancel-in-progress: false
+    # E2E_DEVICE is written to GITHUB_ENV once the device is known: a job-level
+    # value would override it.
     env:
       E2E_PLATFORM: android
-      E2E_DEVICE: emulator-5554
     steps:
+      - name: Prepare Linux host
+        if: runner.os == 'Linux'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          echo "E2E_DEVICE=emulator-5554" >> "$GITHUB_ENV"
+
+      # Same host setup as the iOS job (Docker Desktop's CLI alone, an empty
+      # DOCKER_CONFIG, Java 17), plus the host's Android SDK. Android state
+      # lives in ~/Library/Android/e2e (ANDROID_USER_HOME), never ~/.android:
+      # the AVDs there persist so their quick-boot snapshots survive runs.
+      - name: Prepare macOS host
+        if: runner.os == 'macOS'
+        run: |
+          shim="$RUNNER_TEMP/e2e-bin"
+          mkdir -p "$shim"
+          if [ -x /usr/local/bin/docker ]; then ln -sf /usr/local/bin/docker "$shim/docker"; fi
+          echo "$shim" >> "$GITHUB_PATH"
+          echo "JAVA_HOME=$(/usr/libexec/java_home -v 17)" >> "$GITHUB_ENV"
+          export DOCKER_CONFIG="$RUNNER_TEMP/docker-config"
+          mkdir -p "$DOCKER_CONFIG"
+          printf '{}\n' > "$DOCKER_CONFIG/config.json"
+          echo "DOCKER_CONFIG=$DOCKER_CONFIG" >> "$GITHUB_ENV"
+          if [ -S "$HOME/.docker/run/docker.sock" ]; then
+            export DOCKER_HOST="unix://$HOME/.docker/run/docker.sock"
+            echo "DOCKER_HOST=$DOCKER_HOST" >> "$GITHUB_ENV"
+          fi
+          if ! "$shim/docker" info > /dev/null 2>&1; then
+            echo "::warning::Docker is not running on this runner; a local backend in setup-command will fail."
+          fi
+          sdk="$HOME/Library/Android/sdk"
+          if [ ! -x "$sdk/emulator/emulator" ] || [ ! -x "$sdk/cmdline-tools/latest/bin/avdmanager" ]; then
+            echo "::error::The runner host needs the Android SDK at $sdk with emulator and cmdline-tools/latest."
+            exit 1
+          fi
+          user_home="$HOME/Library/Android/e2e"
+          mkdir -p "$user_home/avd"
+          {
+            echo "ANDROID_HOME=$sdk"
+            echo "ANDROID_SDK_ROOT=$sdk"
+            echo "ANDROID_USER_HOME=$user_home"
+            echo "ANDROID_AVD_HOME=$user_home/avd"
+          } >> "$GITHUB_ENV"
+          printf '%s\n' "$sdk/cmdline-tools/latest/bin" "$sdk/emulator" "$sdk/platform-tools" >> "$GITHUB_PATH"
+
       # The build, a local backend and the emulator outgrow the hosted runner's
       # free disk; drop toolchains this job never uses.
       - name: Free disk space
@@ -153,12 +211,15 @@ jobs:
           registry-url: ${{ inputs.registry-scope != '' && 'https://npm.pkg.github.com' || '' }}
           scope: ${{ inputs.registry-scope }}
 
+      # The Studio already has Java 17 and a warm ~/.gradle.
       - uses: actions/setup-java@v6
+        if: runner.os == 'Linux'
         with:
           distribution: temurin
           java-version: 17
 
       - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        if: runner.os == 'Linux'
         with:
           cache-read-only: false
 
@@ -217,28 +278,22 @@ jobs:
           fi
           echo "E2E_TEST_SCRIPT=$script" >> "$GITHUB_ENV"
 
-      - name: Enable KVM
-        if: runner.os == 'Linux'
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-
       - name: Cache AVD
+        if: runner.os == 'Linux'
         uses: actions/cache@v6
         id: avd-cache
         with:
           path: |
             ~/.android/avd/*
             ~/.android/adb*
-          key: avd-${{ inputs.android-api-level }}-${{ inputs.android-arch }}-${{ inputs.android-profile }}-4c4g
+          key: avd-${{ inputs.android-api-level }}-${{ inputs.android-arch || 'x86_64' }}-${{ inputs.android-profile }}-4c4g
 
       - name: Create AVD snapshot
-        if: steps.avd-cache.outputs.cache-hit != 'true'
+        if: runner.os == 'Linux' && steps.avd-cache.outputs.cache-hit != 'true'
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2
         with:
           api-level: ${{ inputs.android-api-level }}
-          arch: ${{ inputs.android-arch }}
+          arch: ${{ inputs.android-arch || 'x86_64' }}
           profile: ${{ inputs.android-profile }}
           cores: 4
           ram-size: 4096M
@@ -248,10 +303,11 @@ jobs:
           script: echo "Generated AVD snapshot for caching."
 
       - name: Run Maestro suite
+        if: runner.os == 'Linux'
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2
         with:
           api-level: ${{ inputs.android-api-level }}
-          arch: ${{ inputs.android-arch }}
+          arch: ${{ inputs.android-arch || 'x86_64' }}
           profile: ${{ inputs.android-profile }}
           cores: 4
           ram-size: 4096M
@@ -265,11 +321,138 @@ jobs:
             adb shell pm disable-user --user 0 com.android.quicksearchbox || true
             bash "$E2E_TEST_SCRIPT"
 
+      # macOS: one AVD per runner, and a runner runs one job at a time, so no
+      # other job touches it. The first run creates it, cold-boots it, saves a
+      # quick-boot snapshot and shuts it down; later runs boot from that
+      # snapshot and never save over it. When the emulator rejects the snapshot
+      # (a new emulator or system image), this run cold-boots and the AVD is
+      # rebuilt next time. Each job picks a free port, so repos share the host.
+      - name: Boot emulator
+        if: runner.os == 'macOS'
+        env:
+          API: ${{ inputs.android-api-level }}
+          ARCH: ${{ inputs.android-arch || 'arm64-v8a' }}
+          PROFILE: ${{ inputs.android-profile }}
+        run: |
+          image="system-images;android-$API;google_apis;$ARCH"
+          if [ ! -d "$ANDROID_HOME/system-images/android-$API/google_apis/$ARCH" ]; then
+            yes | sdkmanager "$image" > /dev/null
+          fi
+          name="e2e-$RUNNER_NAME-$API-$ARCH-$PROFILE"
+          avd="$ANDROID_AVD_HOME/$name.avd"
+          log="$RUNNER_TEMP/emulator.log"
+          echo "E2E_AVD=$name" >> "$GITHUB_ENV"
+
+          # An emulator left by a run the runner killed holds the AVD's locks.
+          pkill -f -- "-avd $name -port" || true
+          rm -f "$avd"/*.lock
+
+          # Every job on the host shares one adb server. Start it outside this
+          # job's process tracking, or the runner kills it when the job ends
+          # while another job still needs it.
+          RUNNER_TRACKING_ID="" adb start-server
+
+          port=""
+          for p in $(seq 5554 2 5584); do
+            if ! nc -z 127.0.0.1 "$p" 2> /dev/null && ! nc -z 127.0.0.1 $((p + 1)) 2> /dev/null; then
+              port=$p
+              break
+            fi
+          done
+          if [ -z "$port" ]; then echo "::error::No free emulator port in 5554-5584"; exit 1; fi
+          serial="emulator-$port"
+
+          # boot <timeout in seconds> <emulator flags...>
+          boot() {
+            local limit=$1 start=$SECONDS
+            shift
+            emulator -avd "$name" -port "$port" -no-window -no-audio -no-boot-anim \
+              -gpu swiftshader_indirect -camera-back none -camera-front none -accel on "$@" > "$log" 2>&1 &
+            pid=$!
+            echo "E2E_EMULATOR_PID=$pid" >> "$GITHUB_ENV"
+            until [ "$(adb -s "$serial" shell getprop sys.boot_completed 2> /dev/null | tr -d '\r')" = "1" ]; do
+              if ! kill -0 "$pid" 2> /dev/null; then
+                echo "::error::The emulator exited during boot"
+                tail -40 "$log"
+                exit 1
+              fi
+              if [ $((SECONDS - start)) -gt "$limit" ]; then
+                echo "::error::The emulator did not boot in ${limit}s"
+                tail -40 "$log"
+                exit 1
+              fi
+              sleep 3
+            done
+            echo "Booted $name as $serial in $((SECONDS - start))s"
+          }
+
+          if [ ! -f "$avd/snapshots/default_boot/snapshot.pb" ]; then
+            echo "No quick-boot snapshot for $name: creating the AVD and saving one."
+            rm -rf "$avd" "$ANDROID_AVD_HOME/$name.ini"
+            echo no | avdmanager create avd -n "$name" -k "$image" -d "$PROFILE" --force > /dev/null
+            printf 'hw.cpu.ncore=4\nhw.ramSize=4096\ndisk.dataPartition.size=6G\n' >> "$avd/config.ini"
+            boot 900 -no-snapshot-load
+            # Let first-boot work settle so the snapshot holds an idle device.
+            sleep 30
+            adb -s "$serial" emu kill > /dev/null
+            for _ in $(seq 1 90); do
+              kill -0 "$pid" 2> /dev/null || break
+              sleep 2
+            done
+            if [ ! -f "$avd/snapshots/default_boot/snapshot.pb" ]; then
+              echo "::warning::The emulator saved no quick-boot snapshot; this run cold-boots."
+            fi
+          fi
+
+          boot 600 -no-snapshot-save
+          if ! grep -qi "loaded snapshot" "$log"; then
+            echo "::warning::The emulator cold-booted instead of loading its snapshot; the next run rebuilds $name."
+            echo "E2E_AVD_STALE=1" >> "$GITHUB_ENV"
+          fi
+
+          # System apps (Search, the launcher) can ANR on a busy emulator, and
+          # their dialogs cover the app under test: hide error dialogs, drop Search.
+          for setting in window_animation_scale transition_animation_scale animator_duration_scale; do
+            adb -s "$serial" shell settings put global "$setting" 0
+          done
+          adb -s "$serial" shell settings put global hide_error_dialogs 1
+          adb -s "$serial" shell pm disable-user --user 0 com.android.quicksearchbox > /dev/null 2>&1 || true
+          # ANDROID_SERIAL points a bare `adb` at this emulator when another
+          # job's emulator is also running.
+          { echo "E2E_DEVICE=$serial"; echo "ANDROID_SERIAL=$serial"; } >> "$GITHUB_ENV"
+
+      # Maestro reads ~/.android from the JVM's user.home; point it at the
+      # job's Android state, not the host's ~/.android.
+      - name: Run Maestro suite
+        if: runner.os == 'macOS'
+        run: |
+          maestro_home="$RUNNER_TEMP/maestro-home"
+          mkdir -p "$maestro_home"
+          ln -sfn "$ANDROID_USER_HOME" "$maestro_home/.android"
+          export JAVA_TOOL_OPTIONS="-Duser.home=$maestro_home${JAVA_TOOL_OPTIONS:+ $JAVA_TOOL_OPTIONS}"
+          bash "$E2E_TEST_SCRIPT"
+
       - name: Tear down
         if: always() && inputs.teardown-command != ''
         env:
           COMMAND: ${{ inputs.teardown-command }}
         run: bash -euo pipefail -c "$COMMAND"
+
+      - name: Stop emulator
+        if: always() && runner.os == 'macOS' && env.E2E_AVD != ''
+        run: |
+          if [ -n "${E2E_DEVICE:-}" ]; then adb -s "$E2E_DEVICE" emu kill > /dev/null 2>&1 || true; fi
+          if [ -n "${E2E_EMULATOR_PID:-}" ]; then
+            for _ in $(seq 1 15); do
+              kill -0 "$E2E_EMULATOR_PID" 2> /dev/null || break
+              sleep 2
+            done
+            kill -9 "$E2E_EMULATOR_PID" 2> /dev/null || true
+          fi
+          if [ "${E2E_AVD_STALE:-}" = "1" ]; then
+            rm -rf "$ANDROID_AVD_HOME/$E2E_AVD.avd" "$ANDROID_AVD_HOME/$E2E_AVD.ini"
+            echo "Removed $E2E_AVD; the next run rebuilds it and its snapshot."
+          fi
 
       - name: Upload artifacts
         if: failure()
