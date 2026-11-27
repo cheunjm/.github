@@ -8,30 +8,31 @@ name: CD
 #
 # The checkboxes (backend, app, web, storybook, e2e) pick what runs, always in this order:
 #
-#   plan ── backend ─┬─ app ──────────────┬─ e2e ── e2e-status         (develop)
-#                    ├─ web ──────────────┘
-#                    └─ (web) ── storybook
-#   develop-status: after every ticked target succeeded                (develop)
+#   plan ── backend ──┬── app ──┬── e2e ── e2e-status                    (develop)
+#                     └── web ──┴── storybook
+#   develop-status: after backend, app and web, each one that is ticked  (develop)
 #
 #   plan            checks the inputs, computes the version and the OTA message, prints the
 #                   checklist. With backend off, migrations missing from the remote database
-#                   fail it unless ignore_pending_migrations is ticked. (Task 6 adds the
-#                   master gate here.)
+#                   fail it unless ignore_pending_migrations is ticked. On master it fails
+#                   until Task 6 wires the master gate.
 #   backend         supabase link; migration list (remote-only history fails, D23); db push;
 #                   functions deploy.
 #   app             Doppler EXPO_PUBLIC_* -> the EAS environment, expo.version = version, then
-#                   scripts/cd_app.py per platform: fingerprint -> OTA if a build of it exists
-#                   -> eas build --local in a Studio slot (D37) -> eas upload --fingerprint ->
-#                   Firebase / store submit (D44). With e2e it also provides the e2e-<env> test
-#                   build as artifact e2e-app-<platform> (D45), so it runs with e2e alone too.
+#                   scripts/cd_app.py per platform: fingerprint (develop and master must differ,
+#                   R15) -> OTA if a build of it exists -> eas build --local in a Studio slot
+#                   (D37) -> eas upload --fingerprint -> Firebase / store submit (D44). With e2e
+#                   it also provides the e2e-<env> test build as artifact e2e-app-<platform>
+#                   (D45), so it runs with e2e alone too.
 #   web             doppler run -- <web_build_command>, <web_postbuild_command>, vercel deploy.
 #   storybook       <storybook_build_command>, vercel deploy storybook-static.
 #   e2e             e2e-maestro.yml on the test builds; master runs only flows tagged smoke.
 #   develop-status  commit status cd/develop on the deployed commit; e2e-status sets
 #   e2e-status      cd/e2e-develop. The production gate trusts only these (D46).
 #
-# A failed backend skips app, web and e2e. A failed web or storybook does not stop
-# storybook. e2e runs only when app, and web if ticked, succeeded.
+# A failed backend skips app, web and e2e. storybook waits for web but runs whatever web's
+# result, and its own failure blocks nothing (not even cd/develop, R14). e2e runs only when
+# app, and web if ticked, succeeded.
 # dry_run: every job prints its commands and writes nothing (no deploy, build, upload, sync
 # or status); the e2e job is skipped. The app fingerprint and build lookup are read-only and
 # run when EXPO_TOKEN is set.
@@ -282,17 +283,26 @@ jobs:
             exit 1
           fi
           supabase link --project-ref "$SUPABASE_PROJECT_REF"
-          list="$(supabase migration list --remote)"
+          list="$(supabase migration list --remote --output-format json)"
           printf '%s\n' "$list"
-          args=(--fail-on local-only --hint "Tick backend to apply them, or ignore_pending_migrations to deploy anyway.")
+          # Local migration files exist (the step's condition), so zero parsed rows fails closed.
+          args=(--fail-on local-only --require-rows --hint "Tick backend to apply them, or ignore_pending_migrations to deploy anyway.")
           if [ "$DRY_RUN" = "true" ]; then args+=(--warn-only); fi
           printf '%s\n' "$list" | python3 "$CD_SCRIPTS/cd_plan.py" migrations "${args[@]}"
 
       # PLACEHOLDER (INF-1983 Task 6): the master release gate (.github/actions/release-gate)
-      # replaces this step; until then master deploys are not gated here.
+      # replaces this step. Until then master fails closed; a dry run only notes it.
       - name: Master gate (placeholder, Task 6)
         if: steps.validate.outputs.environment == 'master'
-        run: echo "::warning::master gate not wired yet (INF-1983 Task 6)"
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "::notice::master gate not wired (Task 6); a real run fails here"
+            exit 0
+          fi
+          echo "::error::master gate not wired (Task 6)"
+          exit 1
 
       - name: Checklist
         env:
@@ -349,7 +359,7 @@ jobs:
         if: inputs.dry_run
         run: |
           echo "[dry run] supabase link --project-ref <SUPABASE_PROJECT_REF>"
-          echo "[dry run] supabase migration list --remote   (a remote-only migration fails the job, D23)"
+          echo "[dry run] supabase migration list --remote --output-format json   (a remote-only migration fails the job, D23)"
           echo "[dry run] supabase db push --remote --yes"
           if [ -d supabase/functions ]; then echo "[dry run] supabase functions deploy --use-api --yes"; fi
 
@@ -367,10 +377,12 @@ jobs:
             exit 1
           fi
           supabase link --project-ref "$SUPABASE_PROJECT_REF"
-          list="$(supabase migration list --remote)"
+          list="$(supabase migration list --remote --output-format json)"
           printf '%s\n' "$list"
-          printf '%s\n' "$list" | python3 "$CD_SCRIPTS/cd_plan.py" migrations --fail-on remote-only \
-            --hint "Reconcile the history (supabase migration repair) before deploying (D23)."
+          args=(--fail-on remote-only --hint "Reconcile the history (supabase migration repair) before deploying (D23).")
+          # With local migration files, zero parsed rows means an unknown output format: fail closed.
+          if compgen -G 'supabase/migrations/*.sql' > /dev/null; then args+=(--require-rows); fi
+          printf '%s\n' "$list" | python3 "$CD_SCRIPTS/cd_plan.py" migrations "${args[@]}"
 
       - name: Push migrations
         if: ${{ !inputs.dry_run }}
@@ -762,14 +774,18 @@ jobs:
       node-version: ${{ inputs.node_version }}
 
   # D46: the proof the production gate reads, posted with the job token so it comes from
-  # github-actions[bot].
+  # github-actions[bot]. R14: it needs every ticked deploy target among backend, app and web
+  # to have succeeded. Storybook never counts, and app counts only when its box is ticked
+  # (not when the job ran only to make the e2e build).
   develop-status:
     name: develop-status
-    needs: [plan, backend, app, web, storybook]
+    needs: [plan, backend, app, web]
     if: >-
       always() && needs.plan.result == 'success' && needs.plan.outputs.environment == 'develop' &&
-      !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') &&
-      (inputs.backend || inputs.app || inputs.web || inputs.storybook)
+      (inputs.backend || inputs.app || inputs.web) &&
+      (!inputs.backend || needs.backend.result == 'success') &&
+      (!inputs.app || needs.app.result == 'success') &&
+      (!inputs.web || needs.web.result == 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

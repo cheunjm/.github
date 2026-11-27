@@ -9,10 +9,12 @@ cd_plan.py version --environment E [--tag T] --sha S
     master: the tag's X.Y.Z, which must equal package.json; message = the tag.
     develop: package.json bumped by the pending changesets (as the release
     button computes it); message = X.Y.Z+<sha7>.
-cd_plan.py migrations --fail-on local-only|remote-only [--warn-only] [--hint TEXT]
-    Reads `supabase migration list` from stdin. local-only: migrations not yet on
-    the remote (the pending-migrations guard). remote-only: remote history with no
-    local file (D23). Exits 1 when any are found, unless --warn-only.
+cd_plan.py migrations --fail-on local-only|remote-only [--warn-only] [--require-rows] [--hint TEXT]
+    Reads `supabase migration list --output-format json` (or its text table) from
+    stdin. local-only: migrations not yet on the remote (the pending-migrations
+    guard). remote-only: remote history with no local file (D23). Exits 1 when any
+    are found, unless --warn-only. --require-rows (local migration files exist):
+    zero parsed rows exits 1, even with --warn-only.
 cd_plan.py checklist --dry-run true|false backend=true app=false ...
     Prints the checklist table (also to $GITHUB_STEP_SUMMARY).
 """
@@ -103,19 +105,32 @@ def release_version(
 
 
 def parse_migration_list(text: str) -> list[tuple[str, str]]:
-    """(local, remote) per row of `supabase migration list`; either side is '' when absent."""
+    """(local, remote) per row of `supabase migration list`; either side is '' when absent.
+
+    Reads the JSON of `--output-format json` (CLI 3: one object with `migrations`, each
+    {local, remote, time}) when stdout carries it, else the text table: CLI 2 separates
+    cells with `|`, CLI 3 with `│` and draws its rule with `─┼─`."""
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            data = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(data, dict) and isinstance(data.get("migrations"), list):
+            return [(str(m.get("local") or ""), str(m.get("remote") or ""))
+                    for m in data["migrations"] if isinstance(m, dict) and (m.get("local") or m.get("remote"))]
     rows = []
     for line in text.splitlines():
-        cells = [c.strip().strip("`").strip() for c in line.split("|")]
+        cells = [c.strip().strip("`").strip() for c in re.split(r"[|│]", line)]
         if len(cells) < 3:
             continue
         local, remote = cells[0], cells[1]
-        if local.lower() == "local" or set(line.strip()) <= set("-|+ "):
+        if local.lower() == "local":
             continue
-        if not (
-            re.fullmatch(r"\d+", local or "0") and re.fullmatch(r"\d+", remote or "0")
-        ):
-            continue
+        if not (re.fullmatch(r"\d+", local or "0") and re.fullmatch(r"\d+", remote or "0")):
+            continue  # rule rows (---|--- or ───┼───) and anything else that is not a version
         if local or remote:
             rows.append((local, remote))
     return rows
@@ -172,6 +187,8 @@ def main(argv: list[str]) -> int:
     m.add_argument("--fail-on", choices=["local-only", "remote-only"], required=True)
     m.add_argument("--warn-only", action="store_true")
     m.add_argument("--hint", default="")
+    m.add_argument("--require-rows", action="store_true",
+                   help="local migration files exist: zero parsed rows is an error, never a pass")
     c = sub.add_parser("checklist")
     c.add_argument("--dry-run", default="false")
     c.add_argument("targets", nargs="*")
@@ -196,6 +213,10 @@ def main(argv: list[str]) -> int:
             write_outputs(out)
         elif args.cmd == "migrations":
             rows = parse_migration_list(sys.stdin.read())
+            if args.require_rows and not rows:
+                # Fail closed: an output format this parser does not know must not pass the guard.
+                print("::error::could not parse supabase migration list")
+                return 1
             if args.fail_on == "local-only":
                 found = local_only(rows)
                 what = "local migration{s} {are} not on the remote database"

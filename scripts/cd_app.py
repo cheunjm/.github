@@ -5,11 +5,14 @@
                 [--app true] [--e2e false] [--e2e-platforms android,ios]
                 [--store-submit false] [--firebase-groups ''] [--sideload-apk false]
                 [--out DIR] [--eas-json eas.json] [--dry-run]
-                [--fingerprint PLATFORM=HASH ...] [--builds-json PLATFORM=FILE ...]
+                [--fingerprint PLATFORM=HASH ...] [--other-fingerprint PLATFORM=HASH ...]
+                [--builds-json PLATFORM=FILE ...]
   cd_app.py submit-key-path --environment master [--eas-json eas.json]
 
 Per platform, in this order:
-  1. fingerprint: `eas fingerprint:generate -p <p> -e <env> --json`;
+  1. fingerprint: `eas fingerprint:generate -p <p> -e <env> --json`, and the same for the
+     other environment: equal hashes fail the platform before anything runs (R15), since
+     uploaded builds carry no environment and the lookup could not tell them apart;
   2. lookup: `eas build:list --fingerprint-hash <hash>` (finished builds of that platform);
   3. with --app: when a finished build of this fingerprint exists, publish the OTA first
      (`doppler run -- eas update --channel <env> --environment preview|production`), so
@@ -373,18 +376,30 @@ def plan_platform(
 # --- run ------------------------------------------------------------------------------
 
 
-def run_platforms(cfg: Config, eas: dict, platforms: list, lookup, runner, log) -> list:
-    """Run every platform; a failure stops that platform only. Returns the failed ones."""
+OTHER_ENVIRONMENT = {"develop": "master", "master": "develop"}
+
+
+def check_distinct(hash_: str, other_hash: str) -> None:
+    """R15: builds carry no environment (uploaded local builds have no profile or channel),
+    so the lookup can only tell develop's builds from master's by fingerprint."""
+    if hash_ == other_hash:
+        raise AppError(f"develop and master share fingerprint {hash_}: builds can't be told apart")
+
+
+def run_platforms(cfg: Config, eas: dict, platforms: list, fingerprints, list_builds, runner, log) -> list:
+    """Run every platform; a failure stops that platform only. Returns the failed ones.
+    fingerprints(platform) -> (this environment's hash, the other environment's hash);
+    list_builds(platform, hash) -> builds."""
     failed = []
     for platform in platforms:
         log(f"::group::{platform}")
         try:
-            hash_, builds = lookup(platform)
+            hash_, other_hash = fingerprints(platform)
+            check_distinct(hash_, other_hash)
+            builds = list_builds(platform, hash_)
             if cfg.app and platform in cfg.platforms:
                 if has_build(builds, platform, hash_):
-                    log(
-                        "decision: a finished build of this fingerprint exists: OTA, then build"
-                    )
+                    log("decision: a finished build of this fingerprint exists: OTA, then build")
                 else:
                     log("decision: no finished build of this fingerprint: build only")
             urls: dict = {}
@@ -450,71 +465,48 @@ def _pairs(values: list) -> dict:
     return out
 
 
-def make_lookup(cfg: Config, dry_run: bool, fingerprints: dict, builds_files: dict):
+def make_lookups(cfg: Config, dry_run: bool, given: dict, given_other: dict, builds_files: dict):
+    """The read-only lookups: both environments' fingerprints, then the build list. In a dry
+    run without EXPO_TOKEN they are printed, not run, unless given on the command line."""
     have_token = bool(os.environ.get("EXPO_TOKEN"))
 
     def capture(argv):
         print(f"$ {shlex.join(argv)}", flush=True)
-        return subprocess.run(
-            argv, check=True, stdout=subprocess.PIPE, text=True
-        ).stdout
+        return subprocess.run(argv, check=True, stdout=subprocess.PIPE, text=True).stdout
 
-    def lookup(platform):
-        if platform in fingerprints:
-            hash_, source = fingerprints[platform], "given"
+    def fingerprint(platform, environment, overrides):
+        argv = ["eas", "fingerprint:generate", "-p", platform, "-e", environment, "--json"]
+        if platform in overrides:
+            hash_, source = overrides[platform], "given"
         elif dry_run and not have_token:
-            hash_, source = f"<fingerprint-{platform}>", "not computed: no EXPO_TOKEN"
-            print(
-                f"[dry run] eas fingerprint:generate -p {platform} -e {cfg.environment} --json"
-            )
+            print(f"[dry run] {shlex.join(argv)}")
+            hash_, source = f"<fingerprint-{platform}-{environment}>", "not computed: no EXPO_TOKEN"
         else:
-            hash_ = fingerprint_hash(
-                capture(
-                    [
-                        "eas",
-                        "fingerprint:generate",
-                        "-p",
-                        platform,
-                        "-e",
-                        cfg.environment,
-                        "--json",
-                    ]
-                )
-            )
-            source = "eas fingerprint:generate"
-        print(f"fingerprint {hash_} ({source})")
-        list_argv = [
-            "eas",
-            "build:list",
-            "-p",
-            platform,
-            "--fingerprint-hash",
-            hash_,
-            "--status",
-            "finished",
-            "--limit",
-            "50",
-            "--json",
-            "--non-interactive",
-        ]
+            hash_, source = fingerprint_hash(capture(argv)), "eas fingerprint:generate"
+        print(f"fingerprint {environment} {hash_} ({source})")
+        return hash_
+
+    def fingerprints(platform):
+        return (fingerprint(platform, cfg.environment, given),
+                fingerprint(platform, OTHER_ENVIRONMENT[cfg.environment], given_other))
+
+    def list_builds(platform, hash_):
+        list_argv = ["eas", "build:list", "-p", platform, "--fingerprint-hash", hash_, "--status", "finished",
+                     "--limit", "50", "--json", "--non-interactive"]
         if platform in builds_files:
             builds = parse_builds(Path(builds_files[platform]).read_text())
             print(f"builds: {len(builds)} from {builds_files[platform]} (given)")
         elif dry_run and not have_token:
             builds = []
-            print(
-                f"[dry run] {shlex.join(list_argv)}  (not run: no EXPO_TOKEN; assuming no build)"
-            )
+            print(f"[dry run] {shlex.join(list_argv)}  (not run: no EXPO_TOKEN; assuming no build)")
         else:
             builds = parse_builds(capture(list_argv))
             print(f"builds: {len(builds)} listed")
-        _summary(
-            f"- **{platform}:** fingerprint `{hash_}`, "
-            f"{'a build exists' if has_build(builds, platform, hash_) else 'no build yet'}"
-        )
-        return hash_, builds
+        _summary(f"- **{platform}:** fingerprint `{hash_}`, "
+                 f"{'a build exists' if has_build(builds, platform, hash_) else 'no build yet'}")
+        return builds
 
-    return lookup
+    return fingerprints, list_builds
 
 
 def _bool(value: str) -> bool:
@@ -545,6 +537,11 @@ def main(argv: list) -> int:
         "--fingerprint",
         action="append",
         help="PLATFORM=HASH: skip fingerprint:generate",
+    )
+    r.add_argument(
+        "--other-fingerprint",
+        action="append",
+        help="PLATFORM=HASH: the other environment's hash; skip its fingerprint:generate",
     )
     r.add_argument(
         "--builds-json", action="append", help="PLATFORM=FILE: skip build:list"
@@ -592,14 +589,15 @@ def main(argv: list) -> int:
         f"app step: environment {cfg.environment}, platforms {' '.join(order) or 'none'}, "
         f"app {cfg.app}, e2e {cfg.e2e}{', dry run' if args.dry_run else ''}"
     )
-    lookup = make_lookup(
-        cfg, args.dry_run, _pairs(args.fingerprint), _pairs(args.builds_json)
+    fingerprints, list_builds = make_lookups(
+        cfg, args.dry_run, _pairs(args.fingerprint), _pairs(args.other_fingerprint), _pairs(args.builds_json)
     )
     failed = run_platforms(
         cfg,
         eas,
         order,
-        lookup,
+        fingerprints,
+        list_builds,
         dry_runner if args.dry_run else real_runner,
         lambda line: print(line, flush=True),
     )

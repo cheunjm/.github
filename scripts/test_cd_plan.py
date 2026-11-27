@@ -264,5 +264,106 @@ class CliTest(unittest.TestCase):
         )
 
 
+MIGRATION_LIST_V3 = """
+  LOCAL          │ REMOTE         │ TIME (UTC)
+ ────────────────┼────────────────┼─────────────────────
+  20240101000000 │ 20240101000000 │ 2024-01-01 00:00:00
+  20240202000000 │                │ 2024-02-02 00:00:00
+                 │ 20240404000000 │ 2024-04-04 00:00:00
+"""
+
+MIGRATION_LIST_JSON = (
+    json.dumps(
+        {
+            "migrations": [
+                {
+                    "local": "20240101000000",
+                    "remote": "20240101000000",
+                    "time": "2024-01-01 00:00:00",
+                },
+                {
+                    "local": "20240202000000",
+                    "remote": "",
+                    "time": "2024-02-02 00:00:00",
+                },
+                {
+                    "local": "",
+                    "remote": "20240404000000",
+                    "time": "2024-04-04 00:00:00",
+                },
+            ],
+            "message": "Migrations listed",
+            "target": {"kind": "linked"},
+        }
+    )
+    + "\n"
+)
+
+EXPECTED_ROWS = [
+    ("20240101000000", "20240101000000"),
+    ("20240202000000", ""),
+    ("", "20240404000000"),
+]
+
+
+class MigrationListV3Test(unittest.TestCase):
+    def test_box_drawing_table(self):
+        self.assertEqual(cd_plan.parse_migration_list(MIGRATION_LIST_V3), EXPECTED_ROWS)
+
+    def test_json_output(self):
+        self.assertEqual(
+            cd_plan.parse_migration_list(MIGRATION_LIST_JSON), EXPECTED_ROWS
+        )
+
+    def test_json_with_stray_lines(self):
+        self.assertEqual(
+            cd_plan.parse_migration_list("Connecting...\n" + MIGRATION_LIST_JSON),
+            EXPECTED_ROWS,
+        )
+
+    def run_cli(self, text, *args):
+        return subprocess.run(
+            [sys.executable, str(SCRIPT), "migrations", *args],
+            input=text,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_v3_and_json_trip_the_guards(self):
+        for text in (MIGRATION_LIST_V3, MIGRATION_LIST_JSON):
+            with self.subTest(text=text[:20]):
+                r = self.run_cli(text, "--fail-on", "local-only", "--require-rows")
+                self.assertEqual(r.returncode, 1)
+                self.assertIn(
+                    "1 local migration is not on the remote database: 20240202000000",
+                    r.stdout,
+                )
+                r = self.run_cli(text, "--fail-on", "remote-only", "--require-rows")
+                self.assertEqual(r.returncode, 1)
+                self.assertIn(
+                    "1 remote migration has no local file: 20240404000000", r.stdout
+                )
+
+    def test_zero_rows_fails_closed_when_rows_are_required(self):
+        for text in [
+            "",
+            "something else entirely\n",
+            "LOCAL │ REMOTE │ TIME (UTC)\n───┼───┼───\n",
+            '{"migrations": []}\n',
+        ]:
+            with self.subTest(text=text):
+                r = self.run_cli(text, "--fail-on", "local-only", "--require-rows")
+                self.assertEqual(r.returncode, 1)
+                self.assertIn(
+                    "::error::could not parse supabase migration list", r.stdout
+                )
+                r = self.run_cli(
+                    text, "--fail-on", "local-only", "--require-rows", "--warn-only"
+                )
+                self.assertEqual(r.returncode, 1)
+        r = self.run_cli("", "--fail-on", "remote-only")
+        self.assertEqual(r.returncode, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

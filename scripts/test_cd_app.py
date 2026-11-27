@@ -458,7 +458,7 @@ class DryRunTest(unittest.TestCase):
     def test_build_exists(self):
         r = self.run_cli([build()])
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("fingerprint " + H + " (given)", r.stdout)
+        self.assertIn("fingerprint develop " + H + " (given)", r.stdout)
         self.assertIn(
             "decision: a finished build of this fingerprint exists: OTA, then build",
             r.stdout,
@@ -492,12 +492,129 @@ class FailureTest(unittest.TestCase):
             c,
             EAS,
             ["android", "ios"],
-            lookup=lambda p: (H, []),
+            fingerprints=lambda p: (H, "other"),
+            list_builds=lambda p, h: [],
             runner=runner,
             log=lambda *_: None,
         )
         self.assertEqual(failed, ["android"])
         self.assertEqual(calls, ["build develop", "build develop", "upload develop"])
+
+
+class SharedFingerprintTest(unittest.TestCase):
+    """R15: builds carry no environment, so develop and master must not share a fingerprint."""
+
+    def test_check_distinct(self):
+        cd_app.check_distinct(H, "f" * 40)
+        with self.assertRaisesRegex(
+            cd_app.AppError,
+            "develop and master share fingerprint "
+            + H
+            + ": builds can't be told apart",
+        ):
+            cd_app.check_distinct(H, H)
+
+    def test_equal_fingerprints_fail_the_platform_before_any_command(self):
+        calls, listed, logs = [], [], []
+        failed = cd_app.run_platforms(
+            cfg(e2e=True),
+            EAS,
+            ["android", "ios"],
+            fingerprints=lambda p: (H, H) if p == "android" else (H, "other"),
+            list_builds=lambda p, h: listed.append(p) or [build()],
+            runner=lambda step: calls.append(step.name) or 0,
+            log=logs.append,
+        )
+        self.assertEqual(failed, ["android"])
+        self.assertEqual(listed, ["ios"])
+        self.assertTrue(all(not n.startswith("ota") for n in calls))
+        self.assertEqual(
+            calls,
+            [
+                "build develop",
+                "upload develop",
+                "build e2e-develop",
+                "upload e2e-develop",
+            ],
+        )
+        self.assertIn(
+            "::error::android: develop and master share fingerprint "
+            + H
+            + ": builds can't be told apart",
+            logs,
+        )
+
+    def test_different_fingerprints_plan_normally(self):
+        calls = []
+        failed = cd_app.run_platforms(
+            cfg(),
+            EAS,
+            ["android"],
+            fingerprints=lambda p: (H, "other"),
+            list_builds=lambda p, h: [build()],
+            runner=lambda step: calls.append(step.name) or 0,
+            log=lambda *_: None,
+        )
+        self.assertEqual(failed, [])
+        self.assertEqual(calls, ["ota", "build develop", "upload develop"])
+
+    def run_cli(self, *extra):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "eas.json").write_text(json.dumps(EAS))
+            (root / "builds.json").write_text(json.dumps([build()]))
+            return subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "run",
+                    "--dry-run",
+                    "--environment",
+                    "develop",
+                    "--message",
+                    "1.4.0+0123456",
+                    "--platforms",
+                    "android",
+                    "--out",
+                    str(root / "out"),
+                    "--fingerprint",
+                    "android=" + H,
+                    "--builds-json",
+                    "android=" + str(root / "builds.json"),
+                    *extra,
+                ],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                env={"PATH": "/nonexistent"},
+            )
+
+    def test_dry_run_prints_both_hashes(self):
+        r = self.run_cli("--other-fingerprint", "android=" + "e" * 40)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("fingerprint develop " + H + " (given)", r.stdout)
+        self.assertIn("fingerprint master " + "e" * 40 + " (given)", r.stdout)
+        r = self.run_cli()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(
+            "[dry run] eas fingerprint:generate -p android -e master --json", r.stdout
+        )
+        self.assertIn(
+            "fingerprint master <fingerprint-android-master> (not computed: no EXPO_TOKEN)",
+            r.stdout,
+        )
+
+    def test_dry_run_with_equal_hashes_fails(self):
+        r = self.run_cli("--other-fingerprint", "android=" + H)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn(
+            "develop and master share fingerprint "
+            + H
+            + ": builds can't be told apart",
+            r.stdout,
+        )
+        self.assertNotIn("[dry run] doppler", r.stdout)
+        self.assertNotIn("build:list", r.stdout)
 
 
 if __name__ == "__main__":
