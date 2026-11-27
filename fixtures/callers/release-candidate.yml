@@ -1,0 +1,71 @@
+name: Release candidate
+
+# The release button (INF-1983 D40, D46): copy to .github/workflows/release-candidate.yml in
+# an app repo. It computes the version, then deploys develop from the commit it runs on and
+# sets cd/develop (and cd/e2e-develop) on it, which the production button's gate reads.
+# Default the checkboxes to what the repo has: backend (Supabase), app (Expo), web (Vercel),
+# storybook (a design-system repo); e2e is on in both buttons.
+
+on:
+  workflow_dispatch:
+    inputs:
+      backend:
+        description: "Deploy the Supabase backend"
+        type: boolean
+        default: true # false when the repo has no supabase/
+      app:
+        description: "Build and distribute the app (OTA first when a build of this fingerprint exists)"
+        type: boolean
+        default: true # false for web-only repos
+      web:
+        description: "Deploy the web build to Vercel"
+        type: boolean
+        default: true # false when the repo has no web build
+      storybook:
+        description: "Deploy Storybook"
+        type: boolean
+        default: false # true for repos with Storybook
+      e2e:
+        description: "Run e2e against the deployed app"
+        type: boolean
+        default: true
+      ignore_pending_migrations:
+        description: "With backend off, deploy even though migrations are missing on the remote"
+        type: boolean
+        default: false
+
+# One develop deploy at a time; a second press waits instead of cancelling a running one.
+concurrency:
+  group: cd-develop
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  cut:
+    uses: cheunjm/.github/.github/workflows/release-candidate.yml@v1
+    permissions:
+      contents: write
+      checks: read
+    secrets: inherit
+
+  cd:
+    needs: cut
+    uses: cheunjm/.github/.github/workflows/cd.yml@v1
+    permissions:
+      contents: read
+      statuses: write
+      checks: read
+    secrets: inherit
+    with:
+      environment: develop
+      ref: ${{ needs.cut.outputs.ref }}
+      backend: ${{ inputs.backend }}
+      app: ${{ inputs.app }}
+      web: ${{ inputs.web }}
+      storybook: ${{ inputs.storybook }}
+      e2e: ${{ inputs.e2e }}
+      ignore_pending_migrations: ${{ inputs.ignore_pending_migrations }}
+      # firebase_groups: "internal"
+      # slack_channel: "C0123456789"

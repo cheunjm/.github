@@ -1,0 +1,974 @@
+name: CD
+
+# Shared deploy for app repos (INF-1983 D40-D46). A repo's two buttons call it in the
+# same run that presses them:
+#   release button     environment: develop, ref: <sha>   (release-candidate.yml's `ref` output)
+#   production button  environment: master,  tag: vX.Y.Z  (the Version PR's release tag)
+# An empty environment deploys nothing; cd has no push or tag trigger.
+#
+# The checkboxes (backend, app, web, storybook, e2e) pick what runs, always in this order:
+#
+#   plan ── backend ──┬── app ──┬── e2e ── e2e-status                    (develop)
+#                     └── web ──┴── storybook
+#   develop-status: after backend, app and web, each one that is ticked  (develop)
+#
+#   plan            checks the inputs, computes the version and the OTA message, prints the
+#                   checklist. With backend off, migrations missing from the remote database
+#                   fail it unless ignore_pending_migrations is ticked. On master it then runs the
+#                   release gate (D46); a failed gate fails plan and skips every target.
+#   backend         supabase link; migration list (remote-only history fails, D23); db push;
+#                   functions deploy.
+#   app             Doppler EXPO_PUBLIC_* -> the EAS environment, expo.version = version, then
+#                   scripts/cd_app.py per platform: fingerprint (develop and master must differ,
+#                   R15) -> OTA if a build of it exists -> eas build --local in a Studio slot
+#                   (D37) -> eas upload --fingerprint -> Firebase / store submit (D44). With e2e
+#                   it also provides the e2e-<env> test build as artifact e2e-app-<platform>
+#                   (D45), so it runs with e2e alone too.
+#   web             doppler run -- <web_build_command>, <web_postbuild_command>, vercel deploy.
+#   storybook       <storybook_build_command>, vercel deploy storybook-static.
+#   e2e             e2e-maestro.yml on the test builds; master runs only flows tagged smoke.
+#   develop-status  commit status cd/develop on the deployed commit; e2e-status sets
+#   e2e-status      cd/e2e-develop. The production gate trusts only these (D46).
+#   notify          one Slack post when slack_channel is set, whatever the results.
+#
+# A failed backend skips app, web and e2e. storybook waits for web but runs whatever web's
+# result, and its own failure blocks nothing (not even cd/develop, R14). e2e runs only when
+# app, and web if ticked, succeeded.
+# dry_run: every job prints its commands and writes nothing (no deploy, build, upload, sync
+# or status); the e2e job is skipped. The app fingerprint and build lookup are read-only and
+# run when EXPO_TOKEN is set.
+#
+# GitHub Environments develop and master hold the deploy values (D14, D22.4):
+#   secrets  EXPO_TOKEN, DOPPLER_TOKEN, VERCEL_TOKEN, SUPABASE_ACCESS_TOKEN,
+#            SUPABASE_DB_PASSWORD, SUPABASE_PROJECT_REF, ASC_API_KEY_P8, ASC_KEY_ID,
+#            ASC_ISSUER_ID, PLAY_SERVICE_ACCOUNT_JSON, FIREBASE_SERVICE_ACCOUNT_JSON,
+#            E2E_TEST_ACCOUNTS
+#   vars     VERCEL_ORG_ID, VERCEL_PROJECT_ID, STORYBOOK_VERCEL_PROJECT_ID,
+#            FIREBASE_APP_ID_ANDROID (or FIREBASE_APP_ID), FIREBASE_APP_ID_IOS,
+#            APPLE_TEAM_ID, APPLE_TEAM_TYPE (optional, for EAS-managed iOS signing)
+#
+# No `permissions:` here; callers grant contents: read, statuses: write, checks: read.
+#
+#   jobs:
+#     cut:
+#       uses: cheunjm/.github/.github/workflows/release-candidate.yml@v1
+#       permissions: {contents: read, checks: read}
+#     cd:
+#       needs: cut
+#       uses: cheunjm/.github/.github/workflows/cd.yml@v1
+#       permissions: {contents: read, statuses: write, checks: read}
+#       secrets: inherit
+#       with:
+#         environment: develop
+#         ref: ${{ needs.cut.outputs.ref }}
+#         backend: ${{ inputs.backend }}
+#         app: ${{ inputs.app }}
+#         web: ${{ inputs.web }}
+#         e2e: ${{ inputs.e2e }}
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "develop or master, set by the button caller. Empty deploys nothing"
+        type: string
+        default: ""
+      tag:
+        description: "master: the vX.Y.Z tag to check out and deploy"
+        type: string
+        default: ""
+      ref:
+        description: "develop: the commit SHA to check out and deploy (the release button's ref output); empty uses the run's commit"
+        type: string
+        default: ""
+      dry_run:
+        description: "Resolve and print every command; deploy nothing"
+        type: boolean
+        default: false
+      backend:
+        type: boolean
+        default: false
+      ignore_pending_migrations:
+        description: "With backend off, deploy even though local migrations are missing on the remote database"
+        type: boolean
+        default: false
+      app:
+        type: boolean
+        default: false
+      platforms:
+        description: "App platforms: android, ios (comma-separated)"
+        type: string
+        default: "android,ios"
+      store_submit:
+        description: "master: eas submit to the Play Store and the App Store"
+        type: boolean
+        default: false
+      firebase_groups:
+        description: "Firebase App Distribution tester groups for each installable build; empty skips Firebase"
+        type: string
+        default: ""
+      sideload_apk:
+        description: "Also build Android profile <env>-apk"
+        type: boolean
+        default: false
+      web:
+        type: boolean
+        default: false
+      web_build_command:
+        type: string
+        default: "npx expo export --platform web"
+      web_postbuild_command:
+        description: "Runs after the build, before the deploy (arami: scripts/web-postbuild.sh)"
+        type: string
+        default: ""
+      web_output_dir:
+        type: string
+        default: "dist"
+      storybook:
+        type: boolean
+        default: false
+      storybook_build_command:
+        type: string
+        default: "npm run storybook:build"
+      e2e:
+        type: boolean
+        default: false
+      e2e_platforms:
+        description: "e2e platforms: android, ios (comma-separated)"
+        type: string
+        default: "android,ios"
+      e2e_flows:
+        type: string
+        default: ".maestro"
+      eas_runner:
+        description: "Runner for the app job (the Studio; ubuntu-latest works for dry runs)"
+        type: string
+        default: "mac-studio"
+      node_version:
+        type: string
+        default: "20"
+      install_command:
+        description: "Dependency install command; empty skips it"
+        type: string
+        default: "npm ci"
+      slack_channel:
+        description: "Slack channel ID for the release post; empty posts nothing (needs SLACK_BOT_TOKEN)"
+        type: string
+        default: ""
+      scripts_ref:
+        description: "Ref of cheunjm/.github to fetch scripts/cd_*.py from. Default v1; the self-test passes the PR head"
+        type: string
+        default: "v1"
+      working_directory:
+        description: "Directory of the app inside the checkout (the self-test uses fixtures/expo)"
+        type: string
+        default: "."
+      migration_list_stub:
+        description: "Self-test only, dry runs only: a file (relative to working_directory) read instead of `supabase migration list`, so the pending-migrations guard runs without secrets and fails for real"
+        type: string
+        default: ""
+      expect_failure:
+        description: "Self-test only: plan passes only when the pending-migrations guard or the master gate failed with output containing this text"
+        type: string
+        default: ""
+    secrets:
+      EXPO_TOKEN:
+        required: false
+      DOPPLER_TOKEN:
+        required: false
+      VERCEL_TOKEN:
+        required: false
+      SUPABASE_ACCESS_TOKEN:
+        required: false
+      SUPABASE_DB_PASSWORD:
+        required: false
+      SUPABASE_PROJECT_REF:
+        required: false
+      ASC_API_KEY_P8:
+        required: false
+      ASC_KEY_ID:
+        required: false
+      ASC_ISSUER_ID:
+        required: false
+      PLAY_SERVICE_ACCOUNT_JSON:
+        required: false
+      FIREBASE_SERVICE_ACCOUNT_JSON:
+        required: false
+      E2E_TEST_ACCOUNTS:
+        required: false
+      SLACK_BOT_TOKEN:
+        required: false
+    outputs:
+      environment:
+        description: "develop, master, or empty when nothing deploys"
+        value: ${{ jobs.plan.outputs.environment }}
+      tag:
+        description: "master: the deployed tag"
+        value: ${{ jobs.plan.outputs.tag }}
+      version:
+        description: "The version X.Y.Z the release carries"
+        value: ${{ jobs.plan.outputs.version }}
+
+# Explicit bash runs steps with -eo pipefail.
+defaults:
+  run:
+    shell: bash
+
+env:
+  EAS_CLI_VERSION: "27.11.0"
+  SUPABASE_CLI_VERSION: "3.2.0"
+  VERCEL_CLI: "vercel@65"
+
+jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Only the pending-migrations guard reads Environment secrets (SUPABASE_*). The name is
+    # checked here too: an unknown environment name would be created on the fly.
+    environment: ${{ (inputs.environment == 'develop' || inputs.environment == 'master') && !inputs.backend && !inputs.ignore_pending_migrations && inputs.environment || null }}
+    outputs:
+      environment: ${{ steps.validate.outputs.environment }}
+      tag: ${{ steps.validate.outputs.tag }}
+      sha: ${{ steps.version.outputs.sha }}
+      version: ${{ steps.version.outputs.version }}
+      message: ${{ steps.version.outputs.message }}
+    steps:
+      - name: Refuse expect_failure on a real run
+        if: inputs.expect_failure != '' && !inputs.dry_run
+        run: |
+          echo "::error::expect_failure is for dry runs"
+          exit 1
+
+      - name: Fetch cd scripts
+        env:
+          SCRIPTS_REF: ${{ inputs.scripts_ref }}
+        run: |
+          # scripts/ lives in cheunjm/.github (public) at scripts_ref, so callers carry no copy.
+          dir="$RUNNER_TEMP/cheunjm-github"
+          rm -rf "$dir"
+          git init -q "$dir"
+          git -C "$dir" fetch -q --depth 1 https://github.com/cheunjm/.github "$SCRIPTS_REF"
+          git -C "$dir" checkout -q FETCH_HEAD
+          echo "CD_SCRIPTS=$dir/scripts" >> "$GITHUB_ENV"
+
+      - name: Check inputs
+        id: validate
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          TAG: ${{ inputs.tag }}
+          REF: ${{ inputs.ref }}
+          FALLBACK_SHA: ${{ github.sha }}
+        run: |
+          python3 "$CD_SCRIPTS/cd_plan.py" validate --environment "$ENVIRONMENT" --tag "$TAG" \
+            --ref "$REF" --fallback-sha "$FALLBACK_SHA"
+
+      - uses: actions/checkout@v7
+        if: steps.validate.outputs.environment != ''
+        with:
+          ref: ${{ steps.validate.outputs.checkout }}
+          persist-credentials: false
+          # The master gate walks first-parent history and compares against the tested commit.
+          # '0' as a string: the number 0 is falsy, so `&& 0 || 1` always gave 1.
+          fetch-depth: ${{ steps.validate.outputs.environment == 'master' && '0' || '1' }}
+
+      - name: Compute version
+        id: version
+        if: steps.validate.outputs.environment != ''
+        working-directory: ${{ inputs.working_directory }}
+        env:
+          ENVIRONMENT: ${{ steps.validate.outputs.environment }}
+          TAG: ${{ steps.validate.outputs.tag }}
+        run: |
+          sha="$(git rev-parse HEAD)"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          if compgen -G 'supabase/migrations/*.sql' > /dev/null; then echo "migrations=true" >> "$GITHUB_OUTPUT"; fi
+          python3 "$CD_SCRIPTS/cd_plan.py" version --environment "$ENVIRONMENT" --tag "$TAG" --sha "$sha"
+
+      - uses: supabase/setup-cli@689adcfb80d947100a1eab127289b97d1fb07b13 # v1
+        if: steps.validate.outputs.environment != '' && !inputs.backend && !inputs.ignore_pending_migrations && steps.version.outputs.migrations == 'true' && inputs.migration_list_stub == ''
+        with:
+          version: ${{ env.SUPABASE_CLI_VERSION }}
+
+      # D40: an app or web deploy must not outrun the schema it needs. The self-test sets
+      # expect_failure (the step continues on error and the "Expected failure" step asserts
+      # it) and, in a dry run, migration_list_stub in place of the remote lookup.
+      - name: Check for pending migrations
+        id: pending
+        if: steps.validate.outputs.environment != '' && !inputs.backend && !inputs.ignore_pending_migrations && steps.version.outputs.migrations == 'true'
+        continue-on-error: ${{ inputs.expect_failure != '' && inputs.dry_run }}
+        working-directory: ${{ inputs.working_directory }}
+        env:
+          ENVIRONMENT: ${{ steps.validate.outputs.environment }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          STUB: ${{ inputs.migration_list_stub }}
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+        run: |
+          guard() {
+            hint="Tick backend to apply them, or ignore_pending_migrations to deploy anyway."
+            if [ -n "$STUB" ]; then
+              if [ "$DRY_RUN" != "true" ]; then echo "::error::migration_list_stub is for dry runs"; return 1; fi
+              echo "[dry run] migration list read from $STUB"
+              list="$(cat "$STUB")"
+              printf '%s\n' "$list"
+              printf '%s\n' "$list" | python3 "$CD_SCRIPTS/cd_plan.py" migrations --fail-on local-only --require-rows --hint "$hint"
+              return
+            fi
+            if [ -z "$SUPABASE_PROJECT_REF" ] || [ -z "$SUPABASE_ACCESS_TOKEN" ] || [ -z "$SUPABASE_DB_PASSWORD" ]; then
+              msg="cannot check pending migrations: SUPABASE_ACCESS_TOKEN, SUPABASE_DB_PASSWORD and SUPABASE_PROJECT_REF are not all set in the $ENVIRONMENT environment; tick backend or ignore_pending_migrations"
+              if [ "$DRY_RUN" = "true" ]; then echo "::warning::$msg"; return 0; fi
+              echo "::error::$msg"
+              return 1
+            fi
+            supabase link --project-ref "$SUPABASE_PROJECT_REF"
+            list="$(supabase migration list --remote --output-format json)"
+            printf '%s\n' "$list"
+            # Local migration files exist (the step's condition), so zero parsed rows fails closed.
+            args=(--fail-on local-only --require-rows --hint "$hint")
+            if [ "$DRY_RUN" = "true" ]; then args+=(--warn-only); fi
+            printf '%s\n' "$list" | python3 "$CD_SCRIPTS/cd_plan.py" migrations "${args[@]}"
+          }
+          guard 2>&1 | tee -a "$RUNNER_TEMP/cd-guard.log"
+
+      # D46: production ships what develop last deployed. gate.py comes from the fetched
+      # scripts_ref (not `uses:@v1`, which is a fixed ref), run inside the tag checkout. A
+      # failure fails plan, so every target job is skipped. A dry run runs it too: it only reads.
+      - name: Master gate
+        id: gate
+        if: steps.validate.outputs.environment == 'master'
+        continue-on-error: ${{ inputs.expect_failure != '' && inputs.dry_run }}
+        working-directory: ${{ inputs.working_directory }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          SHA: ${{ steps.version.outputs.sha }}
+          VERSION: ${{ steps.version.outputs.version }}
+          REQUIRE_E2E: ${{ inputs.e2e }}
+        run: |
+          args=(--sha "$SHA" --version "$VERSION")
+          if [ "$REQUIRE_E2E" = "true" ]; then args+=(--require-e2e); fi
+          python3 "$CD_SCRIPTS/../.github/actions/release-gate/gate.py" "${args[@]}" 2>&1 | tee -a "$RUNNER_TEMP/cd-guard.log"
+
+      - name: Expected failure
+        if: inputs.expect_failure != '' && inputs.dry_run
+        env:
+          EXPECT: ${{ inputs.expect_failure }}
+          PENDING: ${{ steps.pending.outcome }}
+          GATE: ${{ steps.gate.outcome }}
+        run: |
+          if [ "$PENDING" != "failure" ] && [ "$GATE" != "failure" ]; then
+            echo "::error::expect_failure is set but neither the pending-migrations guard nor the master gate failed (guard $PENDING, gate $GATE)"
+            exit 1
+          fi
+          if ! grep -qF -- "$EXPECT" "$RUNNER_TEMP/cd-guard.log"; then
+            echo "::error::the guard failed, but its output does not contain: $EXPECT"
+            exit 1
+          fi
+          echo "plan failed as expected: output contains '$EXPECT'"
+
+      - name: Checklist
+        env:
+          ENVIRONMENT: ${{ steps.validate.outputs.environment }}
+          TARGET: ${{ steps.validate.outputs.tag || steps.version.outputs.sha }}
+          VERSION: ${{ steps.version.outputs.version }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          BACKEND: ${{ inputs.backend }}
+          APP: ${{ inputs.app }}
+          WEB: ${{ inputs.web }}
+          STORYBOOK: ${{ inputs.storybook }}
+          E2E: ${{ inputs.e2e }}
+        run: |
+          mode=""
+          if [ "$DRY_RUN" = "true" ]; then mode=" (dry run)"; fi
+          {
+            echo "### cd: ${ENVIRONMENT:-nothing to deploy}$mode"
+            if [ -n "$ENVIRONMENT" ]; then echo "\`$TARGET\`, version \`$VERSION\`"; fi
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -z "$ENVIRONMENT" ]; then BACKEND=false APP=false WEB=false STORYBOOK=false E2E=false; fi
+          python3 "$CD_SCRIPTS/cd_plan.py" checklist --dry-run "$DRY_RUN" \
+            "backend=$BACKEND" "app=$APP" "web=$WEB" "storybook=$STORYBOOK" "e2e=$E2E"
+
+  backend:
+    name: backend
+    needs: plan
+    if: inputs.backend && needs.plan.outputs.environment != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: ${{ needs.plan.outputs.environment }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+
+      - name: Fetch cd scripts
+        env:
+          SCRIPTS_REF: ${{ inputs.scripts_ref }}
+        run: |
+          dir="$RUNNER_TEMP/cheunjm-github"
+          rm -rf "$dir"
+          git init -q "$dir"
+          git -C "$dir" fetch -q --depth 1 https://github.com/cheunjm/.github "$SCRIPTS_REF"
+          git -C "$dir" checkout -q FETCH_HEAD
+          echo "CD_SCRIPTS=$dir/scripts" >> "$GITHUB_ENV"
+
+      - uses: supabase/setup-cli@689adcfb80d947100a1eab127289b97d1fb07b13 # v1
+        with:
+          version: ${{ env.SUPABASE_CLI_VERSION }}
+
+      - name: Dry run
+        if: inputs.dry_run
+        run: |
+          echo "[dry run] supabase link --project-ref <SUPABASE_PROJECT_REF>"
+          echo "[dry run] supabase migration list --remote --output-format json   (a remote-only migration fails the job, D23)"
+          echo "[dry run] supabase db push --remote --yes"
+          if [ -n "$(ls -A supabase/functions 2>/dev/null)" ]; then echo "[dry run] supabase functions deploy --use-api --yes"; fi
+
+      # Supabase CLI 3 targets the local database unless --remote is passed.
+      - name: Link and check migration history
+        if: ${{ !inputs.dry_run }}
+        env:
+          ENVIRONMENT: ${{ needs.plan.outputs.environment }}
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+        run: |
+          if [ -z "$SUPABASE_PROJECT_REF" ] || [ -z "$SUPABASE_ACCESS_TOKEN" ] || [ -z "$SUPABASE_DB_PASSWORD" ]; then
+            echo "::error::backend needs SUPABASE_ACCESS_TOKEN, SUPABASE_DB_PASSWORD and SUPABASE_PROJECT_REF in the $ENVIRONMENT environment"
+            exit 1
+          fi
+          supabase link --project-ref "$SUPABASE_PROJECT_REF"
+          list="$(supabase migration list --remote --output-format json)"
+          printf '%s\n' "$list"
+          args=(--fail-on remote-only --hint "Reconcile the history (supabase migration repair) before deploying (D23).")
+          # With local migration files, zero parsed rows means an unknown output format: fail closed.
+          if compgen -G 'supabase/migrations/*.sql' > /dev/null; then args+=(--require-rows); fi
+          printf '%s\n' "$list" | python3 "$CD_SCRIPTS/cd_plan.py" migrations "${args[@]}"
+
+      - name: Push migrations
+        if: ${{ !inputs.dry_run }}
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+        run: supabase db push --remote --yes
+
+      - name: Deploy functions
+        if: ${{ !inputs.dry_run }}
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: |
+          if [ -n "$(ls -A supabase/functions 2>/dev/null)" ]; then supabase functions deploy --use-api --yes; fi
+
+  app:
+    name: app
+    needs: [plan, backend]
+    # Runs with e2e alone too: e2e needs the test build of the current fingerprint.
+    if: ${{ !failure() && !cancelled() && (inputs.app || inputs.e2e) && needs.plan.outputs.environment != '' }}
+    runs-on: ${{ inputs.eas_runner }}
+    timeout-minutes: 180
+    environment: ${{ needs.plan.outputs.environment }}
+    outputs:
+      modes: ${{ steps.run.outputs.modes }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    steps:
+      # The real build and the e2e build come from this one checkout: eas.json is a
+      # fingerprint source (D44).
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+
+      # eas build --local works in $TMPDIR by default, and a cancelled build left GBs there
+      # (INF-2090); the runner empties $RUNNER_TEMP after every job.
+      - name: Prepare the job
+        run: echo "EAS_LOCAL_BUILD_WORKINGDIR=$RUNNER_TEMP/eas-build" >> "$GITHUB_ENV"
+
+      # The Studio: the host Android SDK and Java 17. ~/.android may sit on a drive the
+      # runner service cannot read, so Android prefs and the JVM's home go to a throwaway
+      # dir. The generated Gradle limits run out of metaspace, and fastlane's 3 s
+      # `xcodebuild -showBuildSettings` timeout fails on a busy host.
+      - name: Prepare the Studio host
+        if: runner.os == 'macOS'
+        run: |
+          jhome="$RUNNER_TEMP/jhome"
+          mkdir -p "$jhome/.android"
+          {
+            echo "ANDROID_HOME=$HOME/Library/Android/sdk"
+            echo "ANDROID_SDK_ROOT=$HOME/Library/Android/sdk"
+            echo "ANDROID_USER_HOME=$jhome/.android"
+            echo "ANDROID_PREFS_ROOT=$jhome"
+            echo "GRADLE_USER_HOME=$HOME/.gradle"
+            echo "JAVA_HOME=$(/usr/libexec/java_home -v 17)"
+            echo "JAVA_TOOL_OPTIONS=-Duser.home=$jhome"
+            echo 'GRADLE_OPTS="-Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g"'
+            echo "FASTLANE_XCODEBUILD_SETTINGS_TIMEOUT=60"
+            echo "FASTLANE_XCODEBUILD_SETTINGS_RETRIES=3"
+          } >> "$GITHUB_ENV"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: ${{ hashFiles(format('{0}/package-lock.json', inputs.working_directory)) != '' && 'npm' || '' }}
+          cache-dependency-path: ${{ inputs.working_directory }}/package-lock.json
+
+      - name: Fetch cd scripts
+        env:
+          SCRIPTS_REF: ${{ inputs.scripts_ref }}
+        run: |
+          dir="$RUNNER_TEMP/cheunjm-github"
+          rm -rf "$dir"
+          git init -q "$dir"
+          git -C "$dir" fetch -q --depth 1 https://github.com/cheunjm/.github "$SCRIPTS_REF"
+          git -C "$dir" checkout -q FETCH_HEAD
+          echo "CD_SCRIPTS=$dir/scripts" >> "$GITHUB_ENV"
+
+      - name: Install dependencies
+        if: inputs.install_command != ''
+        env:
+          COMMAND: ${{ inputs.install_command }}
+        run: bash -euo pipefail -c "$COMMAND"
+
+      # A job-local eas-cli first on PATH: the Studio has an old global one.
+      - name: Install eas-cli
+        run: |
+          npm install --prefix "$RUNNER_TEMP/eas-cli" --no-save --no-audit --no-fund "eas-cli@$EAS_CLI_VERSION" > /dev/null
+          bin="$RUNNER_TEMP/eas-cli/node_modules/.bin"
+          echo "$bin" >> "$GITHUB_PATH"
+          "$bin/eas" --version | grep -q "eas-cli/$EAS_CLI_VERSION " || { echo "::error::eas-cli $EAS_CLI_VERSION did not install"; exit 1; }
+
+      - uses: dopplerhq/cli-action@4819d808ab99e5cde19a0637a16536a4038fad73 # v4.0.1
+
+      # D44: expo.version = package.json's version, and develop builds carry X.Y.Z (CI only).
+      - name: Set expo.version
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          printf '{"version": "%s"}\n' "$VERSION" > "$RUNNER_TEMP/cd-version.json"
+          python3 "$CD_SCRIPTS/sync_app_json.py" app.json "$RUNNER_TEMP/cd-version.json"
+
+      # EXPO_PUBLIC_* are inlined in the bundle, and `eas update --environment` reads the EAS
+      # environment, so Doppler's values are copied there first (port of arami's
+      # scripts/sync-doppler-to-eas.sh). Names are printed, values never. They are public
+      # bundle values, so `eas env:set --value` in argv exposes nothing secret.
+      - name: Sync Doppler EXPO_PUBLIC_* to EAS
+        env:
+          DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EAS_ENV: ${{ needs.plan.outputs.environment == 'master' && 'production' || 'preview' }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "[dry run] doppler secrets download --no-file --format json"
+            echo "[dry run] eas env:set $EAS_ENV --name <EXPO_PUBLIC_*> --value <value> --visibility plaintext --non-interactive   (each)"
+            exit 0
+          fi
+          python3 - <<'PY'
+          import json, os, subprocess
+          env = os.environ["EAS_ENV"]
+          out = subprocess.run(["doppler", "secrets", "download", "--no-file", "--format", "json"],
+                               check=True, capture_output=True, text=True).stdout
+          names = sorted(k for k in json.loads(out) if k.startswith("EXPO_PUBLIC_"))
+          values = json.loads(out)
+          for name in names:
+              print(f"Syncing {name} -> EAS {env}", flush=True)
+              subprocess.run(["eas", "env:set", env, "--name", name, "--value", str(values[name]),
+                              "--visibility", "plaintext", "--non-interactive"],
+                             check=True, stdout=subprocess.DEVNULL)
+          print(f"{len(names)} EXPO_PUBLIC_* values synced to EAS {env}")
+          PY
+
+      # Key files live under RUNNER_TEMP and are removed in an always() step. eas submit reads
+      # the Play key only from the submit profile's serviceAccountKeyPath, so that path is a
+      # symlink to the temp file.
+      - name: Write credentials
+        if: ${{ !inputs.dry_run }}
+        env:
+          ENVIRONMENT: ${{ needs.plan.outputs.environment }}
+          ASC_API_KEY_P8: ${{ secrets.ASC_API_KEY_P8 }}
+          PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+          NEED_PLAY: ${{ inputs.app && inputs.store_submit && needs.plan.outputs.environment == 'master' && contains(inputs.platforms, 'android') }}
+          NEED_FIREBASE: ${{ inputs.app && inputs.firebase_groups != '' }}
+        run: |
+          umask 077
+          creds="$RUNNER_TEMP/cd-creds"
+          mkdir -p "$creds"
+          if [ -n "$ASC_API_KEY_P8" ]; then
+            printf '%s' "$ASC_API_KEY_P8" > "$creds/asc.p8"
+            echo "EXPO_ASC_API_KEY_PATH=$creds/asc.p8" >> "$GITHUB_ENV"
+          fi
+          if [ "$NEED_PLAY" = "true" ]; then
+            if [ -z "$PLAY_SERVICE_ACCOUNT_JSON" ]; then
+              echo "::error::store_submit needs PLAY_SERVICE_ACCOUNT_JSON in the $ENVIRONMENT environment"
+              exit 1
+            fi
+            key="$(python3 "$CD_SCRIPTS/cd_app.py" submit-key-path --environment "$ENVIRONMENT")"
+            if [ -z "$key" ]; then
+              echo "::error::eas.json submit.$ENVIRONMENT.android has no serviceAccountKeyPath"
+              exit 1
+            fi
+            printf '%s' "$PLAY_SERVICE_ACCOUNT_JSON" > "$creds/play.json"
+            mkdir -p "$(dirname "$key")"
+            ln -sfn "$creds/play.json" "$key"
+            echo "CD_PLAY_KEY_LINK=$key" >> "$GITHUB_ENV"
+          fi
+          if [ "$NEED_FIREBASE" = "true" ]; then
+            if [ -z "$FIREBASE_SERVICE_ACCOUNT_JSON" ]; then
+              echo "::error::firebase_groups needs FIREBASE_SERVICE_ACCOUNT_JSON in the $ENVIRONMENT environment"
+              exit 1
+            fi
+            printf '%s' "$FIREBASE_SERVICE_ACCOUNT_JSON" > "$creds/firebase.json"
+            echo "GOOGLE_APPLICATION_CREDENTIALS=$creds/firebase.json" >> "$GITHUB_ENV"
+            echo "XDG_CONFIG_HOME=$RUNNER_TEMP/firebase-config" >> "$GITHUB_ENV"
+          fi
+
+      # D37: local EAS builds take one of the Studio's slots.
+      - name: Acquire Studio slot
+        id: lock
+        if: runner.os == 'macOS' && !inputs.dry_run
+        uses: cheunjm/.github/.github/actions/studio-lock@v1
+        with:
+          mode: acquire
+
+      - name: App step
+        id: run
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
+          EXPO_ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          EXPO_ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          EXPO_APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          EXPO_APPLE_TEAM_TYPE: ${{ vars.APPLE_TEAM_TYPE }}
+          FIREBASE_APP_ID_ANDROID: ${{ vars.FIREBASE_APP_ID_ANDROID || vars.FIREBASE_APP_ID }}
+          FIREBASE_APP_ID_IOS: ${{ vars.FIREBASE_APP_ID_IOS }}
+          ENVIRONMENT: ${{ needs.plan.outputs.environment }}
+          MESSAGE: ${{ needs.plan.outputs.message }}
+          PLATFORMS: ${{ inputs.platforms }}
+          APP: ${{ inputs.app }}
+          E2E: ${{ inputs.e2e }}
+          E2E_PLATFORMS: ${{ inputs.e2e_platforms }}
+          STORE_SUBMIT: ${{ inputs.store_submit }}
+          FIREBASE_GROUPS: ${{ inputs.firebase_groups }}
+          SIDELOAD_APK: ${{ inputs.sideload_apk }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          # eas-cli treats a set-but-empty variable as set.
+          for name in EXPO_ASC_KEY_ID EXPO_ASC_ISSUER_ID EXPO_APPLE_TEAM_ID EXPO_APPLE_TEAM_TYPE; do
+            if [ -z "${!name}" ]; then unset "$name"; fi
+          done
+          args=(run --environment "$ENVIRONMENT" --message "$MESSAGE" --platforms "$PLATFORMS"
+            --app "$APP" --e2e "$E2E" --e2e-platforms "$E2E_PLATFORMS" --store-submit "$STORE_SUBMIT"
+            --firebase-groups "$FIREBASE_GROUPS" --sideload-apk "$SIDELOAD_APK" --out "$RUNNER_TEMP/cd-out")
+          if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
+          python3 "$CD_SCRIPTS/cd_app.py" "${args[@]}"
+
+      - name: Release Studio slot
+        if: always() && steps.lock.outputs.slot != ''
+        uses: cheunjm/.github/.github/actions/studio-lock@v1
+        with:
+          mode: release
+          slot: ${{ steps.lock.outputs.slot }}
+
+      - name: Remove credentials
+        if: always()
+        run: |
+          rm -rf "$RUNNER_TEMP/cd-creds"
+          if [ -n "${CD_PLAY_KEY_LINK:-}" ]; then rm -f "$CD_PLAY_KEY_LINK"; fi
+
+      - name: Upload Android test build
+        if: inputs.e2e && !inputs.dry_run && contains(inputs.e2e_platforms, 'android')
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-app-android
+          path: ${{ runner.temp }}/cd-out/android/e2e/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload iOS test build
+        if: inputs.e2e && !inputs.dry_run && contains(inputs.e2e_platforms, 'ios')
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-app-ios
+          path: ${{ runner.temp }}/cd-out/ios/e2e/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload builds
+        if: always() && inputs.app && !inputs.dry_run
+        uses: actions/upload-artifact@v7
+        with:
+          name: cd-app-${{ needs.plan.outputs.environment }}
+          path: |
+            ${{ runner.temp }}/cd-out/
+            !${{ runner.temp }}/cd-out/*/e2e/**
+          if-no-files-found: ignore
+          retention-days: 14
+
+  web:
+    name: web
+    needs: [plan, backend]
+    if: ${{ !failure() && !cancelled() && inputs.web && needs.plan.outputs.environment != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: ${{ needs.plan.outputs.environment }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    env:
+      VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+      BUILD_COMMAND: ${{ inputs.web_build_command }}
+      POSTBUILD_COMMAND: ${{ inputs.web_postbuild_command }}
+      OUTPUT_DIR: ${{ inputs.web_output_dir }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: ${{ hashFiles(format('{0}/package-lock.json', inputs.working_directory)) != '' && 'npm' || '' }}
+          cache-dependency-path: ${{ inputs.working_directory }}/package-lock.json
+
+      - name: Dry run
+        if: inputs.dry_run
+        run: |
+          printf '[dry run] doppler run -- %s\n' "$BUILD_COMMAND"
+          if [ -n "$POSTBUILD_COMMAND" ]; then printf '[dry run] %s\n' "$POSTBUILD_COMMAND"; fi
+          printf '[dry run] npx --yes %s deploy %s --prod --yes\n' "$VERCEL_CLI" "$OUTPUT_DIR"
+
+      - name: Install dependencies
+        if: ${{ !inputs.dry_run && inputs.install_command != '' }}
+        env:
+          COMMAND: ${{ inputs.install_command }}
+        run: bash -euo pipefail -c "$COMMAND"
+
+      - uses: dopplerhq/cli-action@4819d808ab99e5cde19a0637a16536a4038fad73 # v4.0.1
+        if: ${{ !inputs.dry_run }}
+
+      # EXPO_PUBLIC_* values are inlined at build time, so the build runs under Doppler.
+      - name: Build
+        if: ${{ !inputs.dry_run }}
+        env:
+          DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
+        run: doppler run -- bash -euo pipefail -c "$BUILD_COMMAND"
+
+      - name: Post-build
+        if: ${{ !inputs.dry_run && inputs.web_postbuild_command != '' }}
+        run: bash -euo pipefail -c "$POSTBUILD_COMMAND"
+
+      # Each environment has its own Vercel project, so every deploy is --prod. Without a
+      # project ID vercel would link (or create) a project, so it is required.
+      - name: Deploy
+        if: ${{ !inputs.dry_run }}
+        env:
+          ENVIRONMENT: ${{ needs.plan.outputs.environment }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          if [ -z "$VERCEL_TOKEN" ] || [ -z "$VERCEL_ORG_ID" ] || [ -z "$VERCEL_PROJECT_ID" ]; then
+            echo "::error::web needs secret VERCEL_TOKEN and variables VERCEL_ORG_ID, VERCEL_PROJECT_ID in the $ENVIRONMENT environment"
+            exit 1
+          fi
+          url="$(npx --yes "$VERCEL_CLI" deploy "$OUTPUT_DIR" --prod --yes)"
+          echo "Deployed $url"
+          echo "- **web:** $url" >> "$GITHUB_STEP_SUMMARY"
+
+  storybook:
+    name: storybook
+    needs: [plan, backend, web]
+    # After web whatever its result; a failed storybook blocks nothing.
+    if: ${{ !cancelled() && needs.plan.result == 'success' && inputs.storybook && needs.plan.outputs.environment != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: ${{ needs.plan.outputs.environment }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    env:
+      VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ vars.STORYBOOK_VERCEL_PROJECT_ID }}
+      BUILD_COMMAND: ${{ inputs.storybook_build_command }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: ${{ hashFiles(format('{0}/package-lock.json', inputs.working_directory)) != '' && 'npm' || '' }}
+          cache-dependency-path: ${{ inputs.working_directory }}/package-lock.json
+
+      - name: Dry run
+        if: inputs.dry_run
+        run: |
+          printf '[dry run] %s\n' "$BUILD_COMMAND"
+          printf '[dry run] npx --yes %s deploy storybook-static --prod --yes\n' "$VERCEL_CLI"
+
+      - name: Install dependencies
+        if: ${{ !inputs.dry_run && inputs.install_command != '' }}
+        env:
+          COMMAND: ${{ inputs.install_command }}
+        run: bash -euo pipefail -c "$COMMAND"
+
+      - name: Build
+        if: ${{ !inputs.dry_run }}
+        run: bash -euo pipefail -c "$BUILD_COMMAND"
+
+      - name: Deploy
+        if: ${{ !inputs.dry_run }}
+        env:
+          ENVIRONMENT: ${{ needs.plan.outputs.environment }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          if [ -z "$VERCEL_TOKEN" ] || [ -z "$VERCEL_ORG_ID" ] || [ -z "$VERCEL_PROJECT_ID" ]; then
+            echo "::error::storybook needs secret VERCEL_TOKEN and variables VERCEL_ORG_ID, STORYBOOK_VERCEL_PROJECT_ID in the $ENVIRONMENT environment"
+            exit 1
+          fi
+          url="$(npx --yes "$VERCEL_CLI" deploy storybook-static --prod --yes)"
+          echo "Deployed $url"
+          echo "- **storybook:** $url" >> "$GITHUB_STEP_SUMMARY"
+
+  # A `uses:` job cannot set `environment:`; e2e-maestro runs its device jobs in it.
+  e2e:
+    name: e2e
+    needs: [plan, app, web]
+    if: ${{ !failure() && !cancelled() && inputs.e2e && !inputs.dry_run && needs.plan.outputs.environment != '' }}
+    uses: cheunjm/.github/.github/workflows/e2e-maestro.yml@v1
+    secrets: inherit
+    with:
+      platforms: ${{ inputs.e2e_platforms }}
+      app-artifact: e2e-app
+      flows-path: ${{ inputs.e2e_flows }}
+      include-tags: ${{ needs.plan.outputs.environment == 'master' && 'smoke' || '' }}
+      environment: ${{ needs.plan.outputs.environment }}
+      install-command: ${{ inputs.install_command }}
+      node-version: ${{ inputs.node_version }}
+
+  # D46: the proof the production gate reads, posted with the job token so it comes from
+  # github-actions[bot]. R14: it needs every ticked deploy target among backend, app and web
+  # to have succeeded. Storybook never counts, and app counts only when its box is ticked
+  # (not when the job ran only to make the e2e build).
+  develop-status:
+    name: develop-status
+    needs: [plan, backend, app, web]
+    if: >-
+      always() && needs.plan.result == 'success' && needs.plan.outputs.environment == 'develop' &&
+      (inputs.backend || inputs.app || inputs.web) &&
+      (!inputs.backend || needs.backend.result == 'success') &&
+      (!inputs.app || needs.app.result == 'success') &&
+      (!inputs.web || needs.web.result == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Set cd/develop
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ needs.plan.outputs.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          CONTEXT: cd/develop
+          DESCRIPTION: develop deployed
+        run: |
+          cmd=(gh api -X POST "repos/$REPO/statuses/$SHA" -f state=success -f "context=$CONTEXT"
+            -f "target_url=$RUN_URL" -f "description=$DESCRIPTION")
+          if [ "$DRY_RUN" = "true" ]; then echo "[dry run] ${cmd[*]}"; exit 0; fi
+          "${cmd[@]}" > /dev/null
+          echo "$CONTEXT = success on $SHA"
+
+  e2e-status:
+    name: e2e-status
+    needs: [plan, e2e]
+    if: always() && needs.e2e.result == 'success' && needs.plan.outputs.environment == 'develop'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Set cd/e2e-develop
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ needs.plan.outputs.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          CONTEXT: cd/e2e-develop
+          DESCRIPTION: develop e2e passed
+        run: |
+          gh api -X POST "repos/$REPO/statuses/$SHA" -f state=success -f "context=$CONTEXT" \
+            -f "target_url=$RUN_URL" -f "description=$DESCRIPTION" > /dev/null
+          echo "$CONTEXT = success on $SHA"
+
+  # One post per run, whatever happened. The checklist lines are the jobs' own results
+  # ("off" when the box was not ticked); a Slack failure only warns.
+  notify:
+    name: notify
+    needs: [plan, backend, app, web, storybook, e2e]
+    if: always() && inputs.slack_channel != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Post to Slack
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL: ${{ inputs.slack_channel }}
+          REPOSITORY: ${{ github.repository }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          TARGET: ${{ inputs.tag || inputs.ref || github.sha }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PLAN: ${{ needs.plan.result }}
+          BACKEND: ${{ inputs.backend && needs.backend.result || 'off' }}
+          APP: ${{ inputs.app && needs.app.result || 'off' }}
+          WEB: ${{ inputs.web && needs.web.result || 'off' }}
+          STORYBOOK: ${{ inputs.storybook && needs.storybook.result || 'off' }}
+          E2E: ${{ inputs.e2e && needs.e2e.result || 'off' }}
+          MODES: ${{ needs.app.outputs.modes }}
+        run: |
+          if [ -z "$SLACK_BOT_TOKEN" ]; then
+            echo "::warning::slack_channel is set but SLACK_BOT_TOKEN is not; nothing posted"
+            exit 0
+          fi
+          esc() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
+          topic=$(printf '%s' "${REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]' | esc)
+          icon="✅"
+          for r in "$PLAN" "$BACKEND" "$APP" "$WEB" "$STORYBOOK" "$E2E"; do
+            case "$r" in failure|cancelled) icon="❌" ;; esac
+          done
+          dry=""
+          if [ "$DRY_RUN" = "true" ]; then dry=" (dry run)"; fi
+          target="$TARGET"
+          if [ "${#target}" -eq 40 ]; then target="${target:0:7}"; fi
+          text=$(printf '%s [%s]\n%s %s%s' "$icon" "$topic" "${ENVIRONMENT:-nothing to deploy}" "$(printf '%s' "$target" | esc)" "$dry")
+          line() { text+=$(printf '\n• %s: %s' "$1" "$2"); }
+          line plan "$PLAN"
+          line backend "$BACKEND"
+          line app "$APP"
+          IFS=',' read -ra pairs <<< "$MODES"
+          for pair in "${pairs[@]}"; do
+            if [ -n "$pair" ]; then text+=$(printf '\n   ◦ %s: %s' "${pair%%=*}" "${pair#*=}"); fi
+          done
+          line web "$WEB"
+          line storybook "$STORYBOOK"
+          line e2e "$E2E"
+          text+=$(printf '\n→ <%s|run>' "$RUN_URL")
+
+          payload=$(jq -n --arg channel "$SLACK_CHANNEL" --arg text "$text" '{channel: $channel, text: $text}')
+
+          response=$(curl -sS -X POST https://slack.com/api/chat.postMessage \
+            -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+            -H "Content-Type: application/json; charset=utf-8" \
+            --data "$payload") || response=""
+          if ! printf '%s' "$response" | jq -e '.ok == true' > /dev/null 2>&1; then
+            echo "::warning::Slack post failed: $(printf '%s' "$response" | jq -r '.error // "no response"' 2>/dev/null)"
+          fi
