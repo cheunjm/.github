@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Master release gate (INF-1983 D26, D27, D45).
+"""Master release gate (INF-1983 D45, D46).
 
-  gate.py --sha SHA --tag TAG --version X.Y.Z [--require-e2e]
+  gate.py --sha SHA --version X.Y.Z [--require-e2e]   (--tag is accepted and ignored)
 
-Needs GH_TOKEN (gh) and a full-history checkout with tags. Fails in this order:
-not on main; `ci / gate` not green on the SHA; latest prerelease of X.Y.Z is not an
-rc; code differs from that rc beyond version fields, CHANGELOG.md and .changeset/;
-(--require-e2e) the rc's commit has no green `cd/e2e-develop` status.
-Every failure message ends in `cut a new rc first`.
+Needs GH_TOKEN (gh) and a full-history checkout. Fails in this order: not on main;
+`ci / gate` not green on the SHA; no `cd/develop` success (from github-actions[bot])
+in the SHA's first-parent history, 100 commits back at most; code differs from the
+newest such commit (the tested commit) beyond version fields, CHANGELOG.md and
+.changeset/; (--require-e2e) the tested commit has no green `cd/e2e-develop` status.
+Every failure message ends in `press the release button first`.
 """
 
 import argparse
@@ -21,7 +22,10 @@ import urllib.parse
 CI_CHECK = "ci / gate"
 E2E_CONTEXT = "cd/e2e-develop"
 CI_APP_ID = 15368
-E2E_CREATOR = "github-actions[bot]"
+DEVELOP_CONTEXT = "cd/develop"
+STATUS_CREATOR = "github-actions[bot]"
+SEARCH_DEPTH = 100
+HINT = "press the release button first"
 MISSING = object()
 VERSION_FILES = {
     "package.json": [("version",)],
@@ -44,14 +48,24 @@ def on_main(cwd, sha):
     return git(cwd, "merge-base", "--is-ancestor", sha, base, check=False).returncode == 0
 
 
-def latest_prerelease(api, repo, version):
-    """Newest GitHub prerelease (by created_at) whose tag starts with vX.Y.Z-."""
-    releases = api(f"repos/{repo}/releases?per_page=100")
-    prefix = f"v{version}-"
-    pre = [r for r in releases if r.get("prerelease") and str(r.get("tag_name", "")).startswith(prefix)]
-    if not pre:
-        return None
-    return max(pre, key=lambda r: r.get("created_at", ""))["tag_name"]
+def green_status(api, repo, sha, context):
+    """True when the newest `context` status on sha from github-actions[bot] is success."""
+    statuses = api(f"repos/{repo}/commits/{sha}/statuses?per_page=100")
+    mine = [
+        s for s in statuses
+        if s.get("context") == context and (s.get("creator") or {}).get("login") == STATUS_CREATOR
+    ]
+    newest = max(mine, key=lambda s: s.get("created_at", ""), default=None)
+    return bool(newest) and newest.get("state") == "success"
+
+
+def tested_commit(api, repo, cwd, sha):
+    """Newest commit in sha's first-parent history (sha included) deployed to develop."""
+    commits = git(cwd, "rev-list", "--first-parent", "-n", str(SEARCH_DEPTH), sha).stdout.split()
+    for c in commits:
+        if green_status(api, repo, c, DEVELOP_CONTEXT):
+            return c
+    return None
 
 
 def show_json(cwd, rev, path):
@@ -84,9 +98,9 @@ def strict_eq(a, b):
     return a == b
 
 
-def version_only(cwd, rc, sha, path, version):
+def version_only(cwd, tested, sha, path, version):
     try:
-        old = show_json(cwd, rc, path)
+        old = show_json(cwd, tested, path)
         new = show_json(cwd, sha, path)
         old_doc, old_vals = strip_version(old, VERSION_FILES[path])
         new_doc, new_vals = strip_version(new, VERSION_FILES[path])
@@ -102,16 +116,16 @@ def version_only(cwd, rc, sha, path, version):
     return True
 
 
-def code_differs(cwd, rc, sha, version):
+def code_differs(cwd, tested, sha, version):
     out = git(
         cwd, "diff", "--no-renames", "--name-status", "-z", "--no-ext-diff", "--no-textconv",
-        "--no-color", rc, sha,
+        "--no-color", tested, sha,
     ).stdout
     parts = out.split("\0")
     for status, path in zip(parts[0::2], parts[1::2]):
         if path == "CHANGELOG.md" or path.startswith(".changeset/"):
             continue
-        if path in VERSION_FILES and status == "M" and version_only(cwd, rc, sha, path, version):
+        if path in VERSION_FILES and status == "M" and version_only(cwd, tested, sha, path, version):
             continue
         return True
     return False
@@ -122,50 +136,40 @@ def fail(msg):
     return 1
 
 
-def check(sha, tag, version, require_e2e, api=gh_api, cwd=".", repo=None):
+def check(sha, version, require_e2e, api=gh_api, cwd=".", repo=None):
     repo = repo or os.environ.get("GITHUB_REPOSITORY", "")
     if not on_main(cwd, sha):
-        return fail(f"{sha} is not on main: cut a new rc first")
+        return fail(f"{sha} is not on main: {HINT}")
 
     q = urllib.parse.urlencode({"check_name": CI_CHECK})
     runs = api(f"repos/{repo}/commits/{sha}/check-runs?{q}").get("check_runs", [])
     runs = [r for r in runs if r.get("name") == CI_CHECK and (r.get("app") or {}).get("id") == CI_APP_ID]
     latest = max(runs, key=lambda r: r.get("id", 0), default=None)
     if not latest or latest.get("conclusion") != "success":
-        return fail(f"`{CI_CHECK}` is not green on {sha}: cut a new rc first")
+        return fail(f"`{CI_CHECK}` is not green on {sha}: {HINT}")
 
-    rc = latest_prerelease(api, repo, version)
-    if not rc or "-rc." not in rc:
-        return fail(f"latest prerelease of {version} is not an rc: cut a new rc first")
-    rc_sha = git(cwd, "rev-list", "-n", "1", rc, check=False).stdout.strip()
-    if not rc_sha:
-        return fail(f"{rc} not found locally: cut a new rc first")
+    tested = tested_commit(api, repo, cwd, sha)
+    if not tested:
+        return fail(f"no develop deploy before {sha[:7]}: {HINT}")
 
-    if code_differs(cwd, rc, sha, version):
-        return fail(f"code differs from {rc}: cut a new rc first")
+    if code_differs(cwd, tested, sha, version):
+        return fail(f"code differs from the last develop deploy {tested[:7]}: {HINT}")
 
-    if require_e2e:
-        statuses = api(f"repos/{repo}/commits/{rc_sha}/statuses?per_page=100")
-        statuses = [
-            s for s in statuses
-            if s.get("context") == E2E_CONTEXT and (s.get("creator") or {}).get("login") == E2E_CREATOR
-        ]
-        newest = max(statuses, key=lambda s: s.get("created_at", ""), default=None)
-        if not newest or newest.get("state") != "success":
-            return fail(f"{rc} has no green develop e2e: cut a new rc first")
+    if require_e2e and not green_status(api, repo, tested, E2E_CONTEXT):
+        return fail(f"{tested[:7]} has no green develop e2e: {HINT}")
 
-    print(f"gate ok: {sha} matches {rc}")
+    print(f"gate ok: {sha} matches the develop deploy {tested[:7]}")
     return 0
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--sha", required=True)
-    p.add_argument("--tag", default="")
+    p.add_argument("--tag", default="", help="accepted and ignored")
     p.add_argument("--version", required=True)
     p.add_argument("--require-e2e", action="store_true")
     a = p.parse_args()
-    return check(a.sha, a.tag, a.version, a.require_e2e)
+    return check(a.sha, a.version, a.require_e2e)
 
 
 if __name__ == "__main__":

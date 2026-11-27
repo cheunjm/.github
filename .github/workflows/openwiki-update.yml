@@ -154,7 +154,22 @@ jobs:
           OPENAI_COMPATIBLE_BASE_URL: ${{ inputs.base_url }}
           OPENWIKI_MODEL_ID: ${{ inputs.model_id }}
           OPENWIKI_OPENAI_COMPATIBLE_USE_RESPONSES_API: ${{ inputs.use_responses_api }}
-        run: openwiki code "$MODE_FLAG" --print
+        # The planner sometimes stops without a plan ("Repository planning worker exited
+        # without submit_plan"), a model flake that fails before any docs are written.
+        # Retry that one failure once, from a clean openwiki/; other failures fail as is.
+        run: |
+          set +e -uo pipefail
+          log="$RUNNER_TEMP/openwiki-attempt.log"
+          openwiki code "$MODE_FLAG" --print 2>&1 | tee "$log"
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ] && grep -q "exited without submit_plan" "$log"; then
+            echo "::warning::OpenWiki planner exited without a plan; retrying once."
+            git checkout -- openwiki 2>/dev/null || true
+            git clean -fdq -- openwiki
+            openwiki code "$MODE_FLAG" --print
+            status=$?
+          fi
+          exit "$status"
 
       - name: Stage generated docs
         if: ${{ !cancelled() }}
