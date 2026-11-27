@@ -17,6 +17,9 @@ import sys
 import time
 
 
+STALE_OWNERLESS_SECONDS = 60
+
+
 def pid_alive(pid) -> bool:
     try:
         os.kill(int(pid), 0)
@@ -77,7 +80,14 @@ def try_acquire(lock_dir: str, slots: int, owner: dict):
             os.mkdir(slot_dir)
         except FileExistsError:
             held = read_owner(slot_dir)
-            if held is not None and not pid_alive(held.get("pid")):
+            if held is None:
+                try:
+                    stale = time.time() - os.stat(slot_dir).st_mtime > STALE_OWNERLESS_SECONDS
+                except OSError:
+                    stale = False
+            else:
+                stale = not pid_alive(held.get("pid"))
+            if stale:
                 remove_slot(slot_dir)
                 try:
                     os.mkdir(slot_dir)

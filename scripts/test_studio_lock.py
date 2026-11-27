@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -67,6 +68,25 @@ class StudioLockTest(unittest.TestCase):
         r = run("release", "--dir", self.dir, "--slot", slot, "--owner-id", "1-a")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertFalse(os.path.exists(os.path.join(self.dir, f"slot-{slot}")))
+
+    def _ownerless(self, age_seconds):
+        os.makedirs(os.path.join(self.dir, "slot-0"))
+        os.makedirs(os.path.join(self.dir, "slot-1"))
+        with open(os.path.join(self.dir, "slot-1", "owner.json"), "w") as f:
+            json.dump({"id": "1-live", "pid": os.getpid()}, f)
+        old = time.time() - age_seconds
+        os.utime(os.path.join(self.dir, "slot-0"), (old, old))
+
+    def test_ownerless_old_slot_is_reused(self):
+        self._ownerless(3600)
+        r = acquire(self.dir, "1-c", pid=os.getpid())
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), "slot=0")
+
+    def test_ownerless_fresh_slot_is_busy(self):
+        self._ownerless(0)
+        r = acquire(self.dir, "1-c", pid=os.getpid(), timeout="0")
+        self.assertEqual(r.returncode, 1)
 
 
 if __name__ == "__main__":

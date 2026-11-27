@@ -11,17 +11,23 @@ Every failure message ends in `cut a new rc first`.
 """
 
 import argparse
+import copy
 import json
 import os
-import re
 import subprocess
 import sys
 import urllib.parse
 
 CI_CHECK = "ci / gate"
 E2E_CONTEXT = "cd/e2e-develop"
-VERSION_FILES = ("package.json", "package-lock.json", "app.json")
-VERSION_LINE = re.compile(r'^\s*"version": ')
+CI_APP_ID = 15368
+E2E_CREATOR = "github-actions[bot]"
+MISSING = object()
+VERSION_FILES = {
+    "package.json": [("version",)],
+    "package-lock.json": [("version",), ("packages", "", "version")],
+    "app.json": [("expo", "version")],
+}
 
 
 def gh_api(path):
@@ -38,38 +44,65 @@ def on_main(cwd, sha):
     return git(cwd, "merge-base", "--is-ancestor", sha, base, check=False).returncode == 0
 
 
-def latest_prerelease(cwd, version):
-    pat = re.compile(r"^v?" + re.escape(version) + r"-([A-Za-z]+)\.(\d+)$")
-    best = None
-    for tag in git(cwd, "tag", "--list").stdout.split():
-        m = pat.match(tag)
-        if not m:
-            continue
-        n = int(m.group(2))
-        is_rc = m.group(1) == "rc"
-        # on a tie across channels, a non-rc wins so the gate fails closed
-        key = (n, not is_rc)
-        if best is None or key > best[0]:
-            best = (key, tag, is_rc)
-    return (best[1], best[2]) if best else (None, False)
+def latest_prerelease(api, repo, version):
+    """Newest GitHub prerelease (by created_at) whose tag starts with vX.Y.Z-."""
+    releases = api(f"repos/{repo}/releases?per_page=100")
+    prefix = f"v{version}-"
+    pre = [r for r in releases if r.get("prerelease") and str(r.get("tag_name", "")).startswith(prefix)]
+    if not pre:
+        return None
+    return max(pre, key=lambda r: r.get("created_at", ""))["tag_name"]
 
 
-def code_differs(cwd, rc, sha):
-    files = git(cwd, "diff", "--name-only", rc, sha).stdout.split("\n")
-    changed = [
-        f for f in files
-        if f and f != "CHANGELOG.md" and not f.startswith(".changeset/")
-    ]
-    if any(f not in VERSION_FILES for f in changed):
-        return True
-    if not changed:
+def show_json(cwd, rev, path):
+    return json.loads(git(cwd, "show", f"{rev}:{path}").stdout)
+
+
+def strip_version(doc, paths):
+    """Return (doc without the version fields, {path: value or MISSING})."""
+    doc = copy.deepcopy(doc)
+    values = {}
+    for path in paths:
+        node = doc
+        for key in path[:-1]:
+            node = node.get(key) if isinstance(node, dict) else None
+        if isinstance(node, dict) and path[-1] in node:
+            values[path] = node.pop(path[-1])
+        else:
+            values[path] = MISSING
+    return doc, values
+
+
+def version_only(cwd, rc, sha, path, version):
+    try:
+        old = show_json(cwd, rc, path)
+        new = show_json(cwd, sha, path)
+        old_doc, old_vals = strip_version(old, VERSION_FILES[path])
+        new_doc, new_vals = strip_version(new, VERSION_FILES[path])
+    except (ValueError, subprocess.CalledProcessError, AttributeError):
         return False
-    diff = git(cwd, "diff", "-U0", rc, sha, "--", *changed).stdout
-    for line in diff.split("\n"):
-        if line.startswith(("+++", "---")) or not line or line[0] not in "+-":
+    if old_doc != new_doc:
+        return False
+    for key, val in new_vals.items():
+        if (val is MISSING) != (old_vals[key] is MISSING):
+            return False
+        if val is not MISSING and val != version:
+            return False
+    return True
+
+
+def code_differs(cwd, rc, sha, version):
+    out = git(
+        cwd, "diff", "--no-renames", "--name-status", "-z", "--no-ext-diff", "--no-textconv",
+        "--no-color", rc, sha,
+    ).stdout
+    parts = out.split("\0")
+    for status, path in zip(parts[0::2], parts[1::2]):
+        if path == "CHANGELOG.md" or path.startswith(".changeset/"):
             continue
-        if not VERSION_LINE.match(line[1:]):
-            return True
+        if path in VERSION_FILES and status == "M" and version_only(cwd, rc, sha, path, version):
+            continue
+        return True
     return False
 
 
@@ -85,21 +118,27 @@ def check(sha, tag, version, require_e2e, api=gh_api, cwd=".", repo=None):
 
     q = urllib.parse.urlencode({"check_name": CI_CHECK})
     runs = api(f"repos/{repo}/commits/{sha}/check-runs?{q}").get("check_runs", [])
-    runs = [r for r in runs if r.get("name", CI_CHECK) == CI_CHECK]
+    runs = [r for r in runs if r.get("name") == CI_CHECK and (r.get("app") or {}).get("id") == CI_APP_ID]
     latest = max(runs, key=lambda r: r.get("id", 0), default=None)
     if not latest or latest.get("conclusion") != "success":
         return fail(f"`{CI_CHECK}` is not green on {sha}: cut a new rc first")
 
-    rc, is_rc = latest_prerelease(cwd, version)
-    if not rc or not is_rc:
+    rc = latest_prerelease(api, repo, version)
+    if not rc or "-rc." not in rc:
         return fail(f"latest prerelease of {version} is not an rc: cut a new rc first")
+    rc_sha = git(cwd, "rev-list", "-n", "1", rc, check=False).stdout.strip()
+    if not rc_sha:
+        return fail(f"{rc} not found locally: cut a new rc first")
 
-    if code_differs(cwd, rc, sha):
+    if code_differs(cwd, rc, sha, version):
         return fail(f"code differs from {rc}: cut a new rc first")
 
     if require_e2e:
-        rc_sha = git(cwd, "rev-list", "-n", "1", rc).stdout.strip()
-        statuses = [s for s in api(f"repos/{repo}/commits/{rc_sha}/statuses") if s.get("context") == E2E_CONTEXT]
+        statuses = api(f"repos/{repo}/commits/{rc_sha}/statuses?per_page=100")
+        statuses = [
+            s for s in statuses
+            if s.get("context") == E2E_CONTEXT and (s.get("creator") or {}).get("login") == E2E_CREATOR
+        ]
         newest = max(statuses, key=lambda s: s.get("created_at", ""), default=None)
         if not newest or newest.get("state") != "success":
             return fail(f"{rc} has no green develop e2e: cut a new rc first")
