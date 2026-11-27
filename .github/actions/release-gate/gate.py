@@ -73,6 +73,17 @@ def strip_version(doc, paths):
     return doc, values
 
 
+def strict_eq(a, b):
+    """Equality that requires the same JSON type (Python treats 1 == 1.0 == True)."""
+    if type(a) is not type(b):
+        return False
+    if isinstance(a, dict):
+        return a.keys() == b.keys() and all(strict_eq(a[k], b[k]) for k in a)
+    if isinstance(a, list):
+        return len(a) == len(b) and all(strict_eq(x, y) for x, y in zip(a, b))
+    return a == b
+
+
 def version_only(cwd, rc, sha, path, version):
     try:
         old = show_json(cwd, rc, path)
@@ -81,7 +92,7 @@ def version_only(cwd, rc, sha, path, version):
         new_doc, new_vals = strip_version(new, VERSION_FILES[path])
     except (ValueError, subprocess.CalledProcessError, AttributeError):
         return False
-    if old_doc != new_doc:
+    if not strict_eq(old_doc, new_doc):
         return False
     for key, val in new_vals.items():
         if (val is MISSING) != (old_vals[key] is MISSING):

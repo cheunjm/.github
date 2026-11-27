@@ -18,12 +18,12 @@ spec = importlib.util.spec_from_file_location("gate", GATE)
 gate = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gate)
 
-PKG = '{\n  "name": "x",\n  "version": "%s",\n  "dependencies": {"a": "%s"}\n}\n'
+PKG = '{\n  "name": "x",\n  "version": "%s",\n  "retries": 1,\n  "dependencies": {"a": "%s"}\n}\n'
 LOCK = (
     '{\n  "name": "x",\n  "version": "%s",\n  "packages": {\n    "": {\n      "version": "%s"\n    },\n'
     '    "node_modules/a": {\n      "version": "%s"\n    }\n  }\n}\n'
 )
-APP = '{\n  "expo": {\n    "version": "%s"\n  }\n}\n'
+APP = '{\n  "expo": {\n    "version": "%s",\n    "supportsTablet": true\n  }\n}\n'
 BOT = {"login": "github-actions[bot]"}
 
 
@@ -118,6 +118,22 @@ class ReleaseGateTest(unittest.TestCase):
 
     def test_version_other_than_release_fails(self):
         self.bump("1.2.4")
+        code, err = self.run_gate()
+        self.assertEqual(code, 1)
+        self.assertIn("code differs from v1.2.3-rc.1: cut a new rc first", err)
+
+    def test_bool_to_int_change_fails(self):
+        self.bump()
+        self.write("app.json", (APP % "1.2.3").replace("true", "1"))
+        self.commit("tablet")
+        code, err = self.run_gate()
+        self.assertEqual(code, 1)
+        self.assertIn("code differs from v1.2.3-rc.1: cut a new rc first", err)
+
+    def test_int_to_float_change_fails(self):
+        self.bump()
+        self.write("package.json", (PKG % ("1.2.3", "1.0.0")).replace('"retries": 1', '"retries": 1.0'))
+        self.commit("retries")
         code, err = self.run_gate()
         self.assertEqual(code, 1)
         self.assertIn("code differs from v1.2.3-rc.1: cut a new rc first", err)
