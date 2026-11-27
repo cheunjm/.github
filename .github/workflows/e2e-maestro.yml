@@ -106,8 +106,27 @@ on:
       timeout-minutes:
         type: number
         default: 60
+      studio-lock:
+        description: "On macOS (the Studio), take one of the Studio's slots (INF-1983 D37) before the heavy steps and release it at the end of the job"
+        type: boolean
+        default: true
+      app-artifact:
+        description: "Name prefix of a same-run artifact with the app to install: <prefix>-android holds one .apk, <prefix>-ios one tarred .app directory. When set, setup-command and build-command are skipped and the app is installed on the booted device"
+        type: string
+        default: ""
+      include-tags:
+        description: "Passed as --include-tags to the default test command (empty test-command only)"
+        type: string
+        default: ""
+      environment:
+        description: "GitHub Environment the android and ios jobs run in, for its secret E2E_TEST_ACCOUNTS. Empty sets no environment"
+        type: string
+        default: ""
     secrets:
       PKG_READ_TOKEN:
+        required: false
+      E2E_TEST_ACCOUNTS:
+        description: 'JSON {"android":{"email":"...","password":"..."},"ios":{...}}: each platform signs in with its own test account, exported as E2E_EMAIL and E2E_PASSWORD'
         required: false
 
 permissions:
@@ -135,6 +154,7 @@ jobs:
       contains(inputs.platforms, 'android') &&
       (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ${{ inputs.android-runner }}
+    environment: ${{ inputs.environment != '' && inputs.environment || null }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     concurrency:
       group: e2e-maestro-android-${{ github.repository }}-${{ github.event.pull_request.number || github.ref }}
@@ -144,6 +164,14 @@ jobs:
     env:
       E2E_PLATFORM: android
     steps:
+      # First step: wait for a Studio slot before anything heavy (INF-1983 D37).
+      - name: Acquire Studio slot
+        id: lock
+        if: runner.os == 'macOS' && inputs.studio-lock
+        uses: cheunjm/.github/.github/actions/studio-lock@v1
+        with:
+          mode: acquire
+
       - name: Prepare Linux host
         if: runner.os == 'Linux'
         run: |
@@ -234,19 +262,70 @@ jobs:
           COMMAND: ${{ inputs.install-command }}
         run: bash -euo pipefail -c "$COMMAND"
 
+      # Test account for this platform from the Environment secret
+      # E2E_TEST_ACCOUNTS; nothing is exported when the secret is empty.
+      - name: Export test account
+        env:
+          ACCOUNTS: ${{ secrets.E2E_TEST_ACCOUNTS }}
+        run: |
+          [ -n "$ACCOUNTS" ] || exit 0
+          creds=$(python3 -I -c '
+          import json, os, sys
+          try:
+              entry = json.loads(os.environ["ACCOUNTS"]).get(os.environ["E2E_PLATFORM"])
+          except (ValueError, AttributeError):
+              print("::error::E2E_TEST_ACCOUNTS is not a JSON object", file=sys.stderr)
+              sys.exit(1)
+          if not isinstance(entry, dict) or not entry.get("email") or not entry.get("password"):
+              print("::error::E2E_TEST_ACCOUNTS has no " + os.environ["E2E_PLATFORM"] + " entry", file=sys.stderr)
+              sys.exit(1)
+          email, password = str(entry["email"]), str(entry["password"])
+          if "\n" in email or "\n" in password or "\r" in email or "\r" in password:
+              print("::error::E2E_TEST_ACCOUNTS values must not contain line breaks", file=sys.stderr)
+              sys.exit(1)
+          print(email)
+          print(password)
+          ')
+          email=$(printf '%s\n' "$creds" | sed -n 1p)
+          password=$(printf '%s\n' "$creds" | sed -n 2p)
+          echo "::add-mask::$email"
+          echo "::add-mask::$password"
+          { echo "E2E_EMAIL=$email"; echo "E2E_PASSWORD=$password"; } >> "$GITHUB_ENV"
+
       - name: Set up
-        if: inputs.setup-command != ''
+        if: inputs.setup-command != '' && inputs.app-artifact == ''
         env:
           COMMAND: ${{ inputs.setup-command }}
         run: bash -euo pipefail -c "$COMMAND"
 
       - name: Build
-        if: inputs.build-command != ''
+        if: inputs.build-command != '' && inputs.app-artifact == ''
         env:
           COMMAND: ${{ inputs.build-command }}
         run: |
           mkdir -p "$E2E_ARTIFACTS"
           bash -euo pipefail -c "$COMMAND" 2>&1 | tee "$E2E_ARTIFACTS/build-android.log"
+
+      - name: Download app
+        if: inputs.app-artifact != ''
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ inputs.app-artifact }}-android
+          path: ${{ runner.temp }}/e2e-app
+
+      - name: Pick app
+        if: inputs.app-artifact != ''
+        env:
+          APP_DIR: ${{ runner.temp }}/e2e-app
+          ARTIFACT: ${{ inputs.app-artifact }}-android
+        run: |
+          count=$(find "$APP_DIR" -type f -name '*.apk' | wc -l | tr -d ' ')
+          if [ "$count" -ne 1 ]; then
+            echo "::error::Artifact $ARTIFACT must hold exactly one .apk, found $count"
+            exit 1
+          fi
+          apk=$(find "$APP_DIR" -type f -name '*.apk')
+          echo "E2E_APK=$apk" >> "$GITHUB_ENV"
 
       - name: Install Maestro
         env:
@@ -266,15 +345,18 @@ jobs:
         env:
           COMMAND: ${{ inputs.test-command }}
           FLOWS: ${{ inputs.flows-path }}
+          TAGS: ${{ inputs.include-tags }}
         run: |
           mkdir -p "$E2E_ARTIFACTS"
           script="$RUNNER_TEMP/e2e-test.sh"
           if [ -n "$COMMAND" ]; then
             printf 'set -euo pipefail\n%s\n' "$COMMAND" > "$script"
           else
+            tagargs=""
+            if [ -n "$TAGS" ]; then tagargs=$(printf ' --include-tags %q' "$TAGS"); fi
             # shellcheck disable=SC2016 # $E2E_DEVICE must expand when the script runs
-            printf 'set -euo pipefail\nmaestro --device "$E2E_DEVICE" test "%s" --format junit --output "%s/report.xml" --debug-output "%s/maestro"\n' \
-              "$FLOWS" "$E2E_ARTIFACTS" "$E2E_ARTIFACTS" > "$script"
+            printf 'set -euo pipefail\nmaestro --device "$E2E_DEVICE" test "%s"%s --format junit --output "%s/report.xml" --debug-output "%s/maestro"\n' \
+              "$FLOWS" "$tagargs" "$E2E_ARTIFACTS" "$E2E_ARTIFACTS" > "$script"
           fi
           echo "E2E_TEST_SCRIPT=$script" >> "$GITHUB_ENV"
 
@@ -319,6 +401,7 @@ jobs:
           script: |
             adb shell settings put global hide_error_dialogs 1
             adb shell pm disable-user --user 0 com.android.quicksearchbox || true
+            [ -z "${E2E_APK:-}" ] || adb install -r "$E2E_APK"
             bash "$E2E_TEST_SCRIPT"
 
       # macOS: one AVD per runner, and a runner runs one job at a time, so no
@@ -421,6 +504,11 @@ jobs:
           # job's emulator is also running.
           { echo "E2E_DEVICE=$serial"; echo "ANDROID_SERIAL=$serial"; } >> "$GITHUB_ENV"
 
+      # On Linux the install runs inside the emulator script above.
+      - name: Install app
+        if: runner.os == 'macOS' && inputs.app-artifact != ''
+        run: adb -s "$E2E_DEVICE" install -r "$E2E_APK"
+
       # Maestro reads ~/.android from the JVM's user.home; point it at the
       # job's Android state, not the host's ~/.android.
       - name: Run Maestro suite
@@ -454,6 +542,13 @@ jobs:
             echo "Removed $E2E_AVD; the next run rebuilds it and its snapshot."
           fi
 
+      - name: Release Studio slot
+        if: always() && steps.lock.outputs.slot != ''
+        uses: cheunjm/.github/.github/actions/studio-lock@v1
+        with:
+          mode: release
+          slot: ${{ steps.lock.outputs.slot }}
+
       - name: Upload artifacts
         if: failure()
         uses: actions/upload-artifact@v7
@@ -479,6 +574,7 @@ jobs:
       contains(inputs.platforms, 'ios') &&
       (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ${{ inputs.ios-runner }}
+    environment: ${{ inputs.environment != '' && inputs.environment || null }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     concurrency:
       group: e2e-maestro-ios-${{ github.repository }}-${{ github.event.pull_request.number || github.ref }}
@@ -488,6 +584,14 @@ jobs:
       # Maestro's iOS driver can be slow to start on a busy machine.
       MAESTRO_DRIVER_STARTUP_TIMEOUT: "600000"
     steps:
+      # First step: wait for a Studio slot before anything heavy (INF-1983 D37).
+      - name: Acquire Studio slot
+        id: lock
+        if: runner.os == 'macOS' && inputs.studio-lock
+        uses: cheunjm/.github/.github/actions/studio-lock@v1
+        with:
+          mode: acquire
+
       # The Studio runner service's PATH has no /usr/local/bin (Docker Desktop's
       # CLI) and no Java selected; Maestro needs Java 17.
       # The runner service's PATH lacks Docker Desktop's CLI (/usr/local/bin).
@@ -543,19 +647,80 @@ jobs:
           COMMAND: ${{ inputs.install-command }}
         run: bash -euo pipefail -c "$COMMAND"
 
+      # Test account for this platform from the Environment secret
+      # E2E_TEST_ACCOUNTS; nothing is exported when the secret is empty.
+      - name: Export test account
+        env:
+          ACCOUNTS: ${{ secrets.E2E_TEST_ACCOUNTS }}
+        run: |
+          [ -n "$ACCOUNTS" ] || exit 0
+          creds=$(python3 -I -c '
+          import json, os, sys
+          try:
+              entry = json.loads(os.environ["ACCOUNTS"]).get(os.environ["E2E_PLATFORM"])
+          except (ValueError, AttributeError):
+              print("::error::E2E_TEST_ACCOUNTS is not a JSON object", file=sys.stderr)
+              sys.exit(1)
+          if not isinstance(entry, dict) or not entry.get("email") or not entry.get("password"):
+              print("::error::E2E_TEST_ACCOUNTS has no " + os.environ["E2E_PLATFORM"] + " entry", file=sys.stderr)
+              sys.exit(1)
+          email, password = str(entry["email"]), str(entry["password"])
+          if "\n" in email or "\n" in password or "\r" in email or "\r" in password:
+              print("::error::E2E_TEST_ACCOUNTS values must not contain line breaks", file=sys.stderr)
+              sys.exit(1)
+          print(email)
+          print(password)
+          ')
+          email=$(printf '%s\n' "$creds" | sed -n 1p)
+          password=$(printf '%s\n' "$creds" | sed -n 2p)
+          echo "::add-mask::$email"
+          echo "::add-mask::$password"
+          { echo "E2E_EMAIL=$email"; echo "E2E_PASSWORD=$password"; } >> "$GITHUB_ENV"
+
       - name: Set up
-        if: inputs.setup-command != ''
+        if: inputs.setup-command != '' && inputs.app-artifact == ''
         env:
           COMMAND: ${{ inputs.setup-command }}
         run: bash -euo pipefail -c "$COMMAND"
 
       - name: Build
-        if: inputs.build-command != ''
+        if: inputs.build-command != '' && inputs.app-artifact == ''
         env:
           COMMAND: ${{ inputs.build-command }}
         run: |
           mkdir -p "$E2E_ARTIFACTS"
           bash -euo pipefail -c "$COMMAND" 2>&1 | tee "$E2E_ARTIFACTS/build-ios.log"
+
+      - name: Download app
+        if: inputs.app-artifact != ''
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ inputs.app-artifact }}-ios
+          path: ${{ runner.temp }}/e2e-app
+
+      - name: Pick app
+        if: inputs.app-artifact != ''
+        env:
+          APP_DIR: ${{ runner.temp }}/e2e-app
+          ARTIFACT: ${{ inputs.app-artifact }}-ios
+        run: |
+          count=$(find "$APP_DIR" -type f \( -name '*.tar.gz' -o -name '*.tar' \) | wc -l | tr -d ' ')
+          if [ "$count" -ne 1 ]; then
+            echo "::error::Artifact $ARTIFACT must hold exactly one .tar.gz or .tar, found $count"
+            exit 1
+          fi
+          archive=$(find "$APP_DIR" -type f \( -name '*.tar.gz' -o -name '*.tar' \))
+          extract="$RUNNER_TEMP/e2e-ios-app"
+          rm -rf "$extract"
+          mkdir -p "$extract"
+          tar -xf "$archive" -C "$extract"
+          count=$(find "$extract" -maxdepth 2 -type d -name '*.app' | wc -l | tr -d ' ')
+          if [ "$count" -ne 1 ]; then
+            echo "::error::Artifact $ARTIFACT must hold exactly one .app, found $count"
+            exit 1
+          fi
+          app=$(find "$extract" -maxdepth 2 -type d -name '*.app')
+          echo "E2E_APP=$app" >> "$GITHUB_ENV"
 
       - name: Install Maestro
         env:
@@ -604,10 +769,15 @@ jobs:
       # Maestro's Android client also reads ~/.android/adbkey from the JVM's
       # user.home (ignoring ANDROID_USER_HOME) even on iOS. Give the JVM a
       # job-local home so an iOS run never touches the host's Android state.
+      - name: Install app
+        if: inputs.app-artifact != ''
+        run: xcrun simctl install "$E2E_DEVICE" "$E2E_APP"
+
       - name: Run Maestro suite
         env:
           COMMAND: ${{ inputs.test-command }}
           FLOWS: ${{ inputs.flows-path }}
+          TAGS: ${{ inputs.include-tags }}
         run: |
           mkdir -p "$E2E_ARTIFACTS"
           maestro_home="$RUNNER_TEMP/maestro-home"
@@ -616,7 +786,9 @@ jobs:
           if [ -n "$COMMAND" ]; then
             bash -euo pipefail -c "$COMMAND"
           else
-            maestro --device "$E2E_DEVICE" test "$FLOWS" --format junit \
+            tags=()
+            if [ -n "$TAGS" ]; then tags=(--include-tags "$TAGS"); fi
+            maestro --device "$E2E_DEVICE" test "$FLOWS" ${tags[@]+"${tags[@]}"} --format junit \
               --output "$E2E_ARTIFACTS/report.xml" --debug-output "$E2E_ARTIFACTS/maestro"
           fi
 
@@ -631,6 +803,13 @@ jobs:
         run: |
           xcrun simctl shutdown "$E2E_DEVICE" > /dev/null 2>&1 || true
           xcrun simctl delete "$E2E_DEVICE"
+
+      - name: Release Studio slot
+        if: always() && steps.lock.outputs.slot != ''
+        uses: cheunjm/.github/.github/actions/studio-lock@v1
+        with:
+          mode: release
+          slot: ${{ steps.lock.outputs.slot }}
 
       - name: Upload artifacts
         if: failure()
@@ -736,12 +915,15 @@ jobs:
         env:
           COMMAND: ${{ inputs.test-command }}
           FLOWS: ${{ inputs.flows-path }}
+          TAGS: ${{ inputs.include-tags }}
         run: |
           mkdir -p "$E2E_ARTIFACTS"
           if [ -n "$COMMAND" ]; then
             bash -euo pipefail -c "$COMMAND"
           else
-            maestro test --platform web "$FLOWS" --format junit \
+            tags=()
+            if [ -n "$TAGS" ]; then tags=(--include-tags "$TAGS"); fi
+            maestro test --platform web "$FLOWS" ${tags[@]+"${tags[@]}"} --format junit \
               --output "$E2E_ARTIFACTS/report.xml" --debug-output "$E2E_ARTIFACTS/maestro"
           fi
 
