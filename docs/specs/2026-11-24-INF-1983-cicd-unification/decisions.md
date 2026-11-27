@@ -68,6 +68,7 @@ D1–D18 were settled in a grilling session on 2026-11-23/24. Recommended answer
 - **Impact:** high
 
 ## D8: EAS build vs OTA update
+- **Status:** refined by D44: the fingerprint now decides whether an OTA is published; every release builds.
 - **Problem:** arami and starlog use `runtimeVersion: { policy: "fingerprint" }` but decide build-vs-update with a path filter, which misfires both ways. ui hardcodes `runtimeVersion` to `major.minor`.
 - **Options:** A: fingerprint-driven (build only if EAS has no build for the current fingerprint in that environment, then always publish the OTA); B: path filter as an input; C: `main` always OTA, `v*` always full build.
 - **Choice:** A. ui moves to the fingerprint policy.
@@ -245,6 +246,7 @@ D20–D23 came from the builder check on 2026-11-24.
 - **Impact:** low
 
 ## D26: Develop deploys from rc tags, master only ships rc-tested code
+- **Status:** partly superseded: tags no longer trigger `cd` (D40), and the Version PR merge no longer deploys master (D41). The rc gate stands.
 - **Supersedes:** D6's "push to `main` deploys develop".
 - **Problem:** Deploying develop on every push to `main` is too heavy (Jace).
 - **Options:** A: a "cut rc" button tags `main`, and master builds from the Version PR tag; B: changesets pre mode, with a Version PR per rc and a release PR for master; C: a nightly scheduled rc.
@@ -262,6 +264,7 @@ D20–D23 came from the builder check on 2026-11-24.
 - **Impact:** high
 
 ## D27: One release flow for every repo, with `next` and `rc` channels
+- **Status:** partly superseded by D41: merging the Version PR no longer deploys master.
 - **Supersedes:** D26 point 3; extends D26's button.
 - **Problem:** ui is the published npm package `@cheunjm/ui` and uses changesets pre mode (`next`). Apps pin exact prereleases from it. D26 point 3 would have taken ui off pre mode without a way to publish prereleases. Jace wants every repo on the same flow.
 - **Options:** A: ui keeps pre mode as an exception; B: every repo uses pre mode; C: every repo uses the button, and package repos also publish what it cuts.
@@ -345,6 +348,7 @@ D20–D23 came from the builder check on 2026-11-24.
 - **Impact:** med
 
 ## D33: e2e runs only on the Version PR, every platform on the Studio
+- **Status:** trigger and enforcement superseded by D45; the Studio runners stand.
 - **Supersedes:** D13's "web e2e stays on hosted runners", and D21's requirement that ui's ruleset include `e2e / web`.
 - **Problem:** Jace: "e2e should only run on versioning, and it should run on mac studio." arami and starlog already run e2e only on the Version PR (`changeset-release/main`) and by dispatch, but Android runs on hosted Linux. ui no longer has an e2e workflow, yet its manifest entry still lists `e2e / web` as a required check, which would block every ui PR. Rulesets also can't require e2e: on a normal PR the caller job is skipped, so only a check named `e2e` appears, never `e2e / android`.
 - **Options:** A: Version PR only, on the Studio, enforced at release time; B: also on every PR; C: keep Android hosted.
@@ -419,3 +423,90 @@ D20–D23 came from the builder check on 2026-11-24.
 - **Proposed by:** human
 - **Chosen by:** human
 - **Impact:** med
+
+## D39: Stage 4 details settled by the AI
+- **Status:** point 6 superseded by D45 (no local e2e stacks).
+- **Problem:** writing the stage 4 tasks found gaps the spec did not settle.
+- **Choice:**
+  1. `cd`'s internal blocks are jobs in one `cd.yml`, not separate reusable files: a reusable workflow can't call a sibling by relative path, and pinning siblings to `@v1` would test the old code on a PR branch. Logic that needs unit tests (the Studio lock, the master release gate) lives in composite actions that ship one release before `cd` uses them.
+  2. Web uses arami's model for every repo: `doppler run -- <build>`, an optional post-build command, then `vercel@65 deploy <dir> --prod` with `VERCEL_ORG_ID` and `VERCEL_PROJECT_ID` as variables. starlog leaves `vercel build`. EAS builds and updates run under `doppler run` after Doppler's `EXPO_PUBLIC_*` values are synced to the EAS environment, and `eas-cli` is pinned (27.11.0). starlog's Firebase App Distribution is kept as the `firebase_groups` input.
+  3. ui has no EAS project or app web deploy, so its `cd` turns on Storybook only. It publishes prereleases from the button inside `release.yml` (npm's trusted publisher), and a `v1.0.0-next.7` seed tag keeps the button from reusing versions pre mode already published.
+  4. give-and-take signs in only with Apple and Google, so its first Maestro suite is a smoke test (launch, sign-in buttons). Signed-in flows need a test-only auth path and are a follow-up issue.
+  5. arami's caller runs the Supabase target only in dry runs until D23's history check is clean.
+  6. e2e Supabase port blocks on the Studio: arami 583xx/584xx, starlog 593xx/594xx, give-and-take 603xx/604xx (iOS/Android), all outside the dev stacks' 54xxx–57xxx.
+- **Rationale:** each follows from D7, D8, D9, D22–D24, D27, D36 or D37, or keeps current behavior.
+- **Proposed by:** ai
+- **Chosen by:** ai
+- **Impact:** med
+
+## D40: Both buttons are checklists and deploy in the same run
+- **Supersedes:** D26's and D38's "the tag push triggers `cd`", and D20's routing of deploys by tag name.
+- **Problem:** Jace wants to choose per release what ships (backend, app, web, Storybook) and to run e2e as part of it. A tag push can't carry choices.
+- **Options:** A: checkboxes on the buttons, and the button run calls `cd`; B: tag pushes with fixed targets per repo; C: choices encoded in the tag message.
+- **Choice:** A.
+  - **Checklist:** `backend`, `app`, `web`, `storybook`, `e2e`, the same on both buttons. Each defaults to what the repo has; e2e is on in both.
+  - **Order:** backend → app → web → storybook → e2e → notify, whatever is ticked.
+  - **Same run:** the release button cuts the tag and then calls `cd` with `environment: develop` and that tag; the production button calls `cd` with `environment: master` and a `vX.Y.Z` tag. Tags trigger nothing.
+  - **Guards:** with `backend` off, pending migrations fail the run unless `ignore_pending_migrations` is ticked. Web, app and e2e wait for backend when it is ticked.
+- **Rationale:** one place to decide what a release does, visible in the run's inputs. The guard stops an app or web deploy that needs a schema the backend doesn't have.
+- **Proposed by:** human (checklist, e2e in it), ai (same-run deploy, guards)
+- **Chosen by:** human
+- **Impact:** high
+
+## D41: Production deploys from a button, not from the Version PR merge
+- **Supersedes:** D26's and D27's "merging the Version PR deploys master".
+- **Problem:** a production release with a native build waits for store review, and Jace wants to control when each part goes live.
+- **Options:** A: a production button with the D40 checklist; B: keep the deploy on merge; C: fixed two-phase buttons (`submit`, then `go-live`).
+- **Choice:** A. Merging the Version PR only creates `vX.Y.Z` and its GitHub release. The production button runs the master gate (D26), then `cd` for master with the checklist. For a native release Jace can press once with `web` off and again with only `web` after the stores approve; the app step never needs a second press (D44). Approved store versions are released in the stores by hand for now.
+- **Rationale:** C was proposed first; Jace asked for every step to be a checkbox instead, which covers both phases with one button.
+- **Proposed by:** human (button), ai (checklist reuse)
+- **Chosen by:** human
+- **Impact:** high
+
+## D42: The production backend applies before store submission; migrations expand, then contract
+- **Problem:** Jace proposed applying the backend after store approval. But Apple and Google reviewers test the new binary against production, so a feature that needs a new table fails review.
+- **Options:** A: backend after approval (every native release must work on the old backend); B: backend before submission, with additive migrations; C: additive before, destructive after, from two migration folders.
+- **Choice:** B, with guards.
+  - **Order:** backend is the first step of every release (D40).
+  - **Expand, then contract:** a column is renamed, retyped or dropped over two releases. The first adds the new shape and keeps both in sync; a later one removes the old shape once no supported app reads it.
+  - **CI guard:** `DROP COLUMN`, `DROP TABLE`, `RENAME` and column type changes fail `db-migration-check` unless the file carries `-- contract: safe after vX.Y.Z`, and the PR's changeset is `minor` (D43).
+  - **Minimum app version:** each app gets an update-required gate, so "no supported app reads it" is something Jace controls (one issue per app).
+- **Rationale:** reviewers see the whole feature, the live app keeps working on an additive schema, and a rejection leaves only unused columns. This is the common practice (expand/contract at GitLab and Stripe; linters like `strong_migrations` and Squawk).
+- **Proposed by:** ai
+- **Chosen by:** human
+- **Impact:** high
+
+## D43: Changeset levels in app repos
+- **Supersedes:** the app-repo rule "minor only when a new native build is needed".
+- **Problem:** migrations need a level, and contract migrations need to stand out.
+- **Options:** A: patch for JS and additive migrations, minor for a native build or a contract migration, no major; B: additive migrations as minor and contract as major.
+- **Choice:** A. App repos never use `major`. `changeset / check` enforces only the contract rule (D42); the native-build rule stays a judgment call, since the fingerprint decides builds anyway.
+- **Proposed by:** human
+- **Chosen by:** human
+- **Impact:** med
+
+## D44: One version, every release builds, the app step decides the OTA
+- **Refines:** D8. The fingerprint now decides whether an OTA is published, not whether a build happens.
+- **Problem:** Jace wants the JS version and the store version to be the same, and new installs to start on the newest code instead of downloading an OTA.
+- **Choice:**
+  - **Version:** `app.json` `expo.version` equals `package.json` `version`, written by the Version PR. Develop builds use `X.Y.Z` (stores accept no prerelease suffix), set in CI only. Build numbers are EAS remote and auto-incremented.
+  - **App step:** one checkbox. Per platform, if a build of the current fingerprint already exists in that environment, the OTA is published first, so existing users update now. Then a new build is always made and distributed: develop to Firebase and the sideload APK, production to the App Store, Play Store and Firebase.
+- **Risk:** if `version` were part of the fingerprint, every release would get a new runtime and existing users would stop receiving OTAs. Expo's `balanced` preset skips it; Task 1 verifies it in each app.
+- **Cost:** a Studio build per platform and a store review on every release.
+- **Proposed by:** human (one version, always submit, one app step), ai (OTA-first order)
+- **Chosen by:** human
+- **Impact:** high
+
+## D45: e2e runs after deploy, against the deployed app
+- **Supersedes:** D33's trigger (the Version PR) and its enforcement, and D39.6's local e2e port blocks.
+- **Problem:** Jace wants e2e only after deploys, as part of the checklist, on both buttons.
+- **Options:** A: test the deployed app; develop runs every flow, production runs `smoke` flows with a dedicated account; B: every flow in both; C: the local-stack suite, run after the deploy.
+- **Choice:** A.
+  - **Test build:** per environment and platform, a test build (Android APK, iOS simulator) of the current fingerprint, made only when missing. It pulls the environment's OTA, so it runs the JS users get. Task 1 checks it shares the real build's runtime.
+  - **Accounts:** one test account per platform per environment, because Android and iOS run at once against one backend. Production `smoke` flows delete what they create.
+  - **Gate:** a green develop e2e sets status `cd/e2e-develop` on the rc commit, and the production gate requires it.
+  - **Retired:** the Version PR e2e trigger and the local Supabase e2e stacks.
+- **Rationale:** it tests what users actually run, and production stays clean.
+- **Proposed by:** human (after deploy, both buttons), ai (test builds, smoke tag, gate)
+- **Chosen by:** human
+- **Impact:** high
