@@ -401,3 +401,21 @@ D20–D23 came from the builder check on 2026-11-24.
 - **Proposed by:** human (runners per platform), ai (snapshot, ports, backend isolation)
 - **Chosen by:** human
 - **Impact:** med
+
+## D37: Heavy Studio jobs share two slots
+- **Problem:** at release time the Studio ran two EAS local Android builds, arami's Android and iOS e2e and openwiki at once (load about 700 on 10 cores). Every step slowed, and Android Maestro hit the 60-minute job timeout (arami run 45939090462).
+- **Options:** A: a Studio-wide lock that heavy jobs wait on; B: raise the e2e timeout and stay parallel; C: Android e2e back on hosted Linux.
+- **Choice:** A, with two slots: e2e build and suite (each platform) and `eas build --local` each take one, so a repo's Android and iOS e2e still run side by side (D36) and builds queue behind them.
+- **Rationale:** fixes the cause; e2e runs only at release time, so waiting is cheap. The first verified run had three heavy jobs and finished; the failed one had four plus openwiki.
+- **Proposed by:** ai
+- **Chosen by:** human (lock), ai (two slots)
+- **Impact:** med
+
+## D38: Develop deploys only from the button, starting before `cd`
+- **Refines:** D26 (timing only).
+- **Problem:** arami's and starlog's `eas-build.yml` and `deploy-web.yml` built and deployed develop on push to `main`, and treated every `v*` tag as master, so an rc tag would have built master, deployed master web and (starlog) applied master migrations.
+- **Choice:** done before stage 4 (arami#93, starlog#153): a `release-candidate` caller in each, prerelease tags deploy develop web and build develop, clean `vX.Y.Z` tags and manual runs deploy master, and a push to `main` deploys nothing but the develop OTA and (starlog) develop migrations, which move to the button with `cd`. arami's `develop` Environment accepts `v*-*` tags.
+- **Also:** give-and-take joins stage 4 (it has no CD: builds, submits and web are manual), and its Studio runners are `mac-studio-giveandtake-android` and `-ios`. Backends deploy on every button press and release, before web and EAS, and a release whose fingerprint already has a build ships as OTA (D8), so JS-only patches never trigger a full build.
+- **Proposed by:** human
+- **Chosen by:** human
+- **Impact:** med
