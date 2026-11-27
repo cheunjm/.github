@@ -11,6 +11,7 @@ import os
 import re
 import subprocess
 import tempfile
+import urllib.parse
 import unittest
 from pathlib import Path
 
@@ -25,7 +26,6 @@ LOCK = (
     '    "node_modules/a": {\n      "version": "%s"\n    }\n  }\n}\n'
 )
 APP = '{\n  "expo": {\n    "version": "%s",\n    "supportsTablet": true\n  }\n}\n'
-BOT = {"login": "github-actions[bot]"}
 
 
 class ReleaseGateTest(unittest.TestCase):
@@ -35,9 +35,11 @@ class ReleaseGateTest(unittest.TestCase):
         self.repo = self._tmp.name
         self.paths = []
         self.check_runs = [{"id": 1, "name": "ci / gate", "conclusion": "success", "app": {"id": 15368}}]
-        self.statuses = {}
-        self.runs = {}
-        self.run_error = False
+        self.runs = []
+        self.jobs = {}
+        self.api_error = False
+        self.loose_runs = False
+        self.status_reads = []
         self.default_branch = "main"
         self.git("init", "-q", "-b", "main")
         self.write_versions("1.2.2", "1.0.0", "1.0.0")
@@ -57,18 +59,16 @@ class ReleaseGateTest(unittest.TestCase):
         self.write_versions(version, "1.0.0", "1.0.0")
         self.commit("bump")
 
-    def deploy(self, sha, state="success", creator=BOT, created_at="2026-01-01T00:00:00Z", context="cd/develop",
-               url=None, **run):
+    def deploy(self, sha, state="success", created_at="2026-01-01T00:00:00Z", job="develop-status", **run):
+        """A release-button run on sha whose cd job `job` ended `state` (latest attempt)."""
         rid = 1000 + len(self.runs)
-        self.runs[rid] = {
-            "event": "workflow_dispatch", "head_branch": "main", "path": ".github/workflows/release-candidate.yml",
-            "head_sha": sha, "conclusion": "success", **run,
-        }
-        if url is None:
-            url = f"https://github.com/o/r/actions/runs/{rid}/job/1"
-        self.statuses.setdefault(sha, []).append(
-            {"context": context, "state": state, "created_at": created_at, "creator": creator, "target_url": url}
-        )
+        self.runs.append({
+            "id": rid, "event": "workflow_dispatch", "head_branch": self.default_branch,
+            "path": ".github/workflows/release-candidate.yml", "head_sha": sha,
+            "conclusion": "success", "created_at": created_at, **run,
+        })
+        self.jobs[rid] = [{"name": f"cd / {job}", "conclusion": state}]
+        return rid
 
     def git(self, *args):
         return subprocess.run(
@@ -90,16 +90,23 @@ class ReleaseGateTest(unittest.TestCase):
 
     def api(self, path):
         self.paths.append(path)
+        if self.api_error and "/actions/" in path:
+            raise RuntimeError("HTTP 500")
         if "check-runs" in path:
             return {"check_runs": self.check_runs}
-        m = re.search(r"commits/([0-9a-f]{40})/statuses", path)
+        if "/statuses" in path:
+            self.status_reads.append(path)
+            return []
+        m = re.fullmatch(r"repos/o/r/actions/workflows/release-candidate\.yml/runs\?(.*)", path)
         if m:
-            return self.statuses.get(m.group(1), [])
-        m = re.fullmatch(r"repos/o/r/actions/runs/(\d+)", path)
+            q = urllib.parse.parse_qs(m.group(1))
+            sha = q["head_sha"][0]
+            assert q["event"] == ["workflow_dispatch"] and q["branch"] == [self.default_branch], q
+            return {"workflow_runs": [r for r in self.runs if r["head_sha"] == sha or self.loose_runs]}
+        m = re.fullmatch(r"repos/o/r/actions/runs/([0-9]+)/jobs\?(.*)", path)
         if m:
-            if self.run_error:
-                raise RuntimeError("HTTP 500")
-            return self.runs[int(m.group(1))]
+            assert "filter=latest" in m.group(2), path
+            return {"jobs": self.jobs[int(m.group(1))]}
         if path == "repos/o/r":
             return {"default_branch": self.default_branch}
         raise AssertionError(path)
@@ -112,8 +119,8 @@ class ReleaseGateTest(unittest.TestCase):
             )
         return code, err.getvalue()
 
-    def e2e(self, state="success", creator=BOT, created_at="2026-01-02T00:00:00Z", sha=None):
-        self.deploy(sha or self.dev_sha, state, creator, created_at, context="cd/e2e-develop")
+    def e2e(self, state="success", created_at="2026-01-02T00:00:00Z", sha=None):
+        self.deploy(sha or self.dev_sha, state, created_at, job="e2e-status")
 
     def test_version_only_diff_passes(self):
         self.bump()
@@ -207,7 +214,7 @@ class ReleaseGateTest(unittest.TestCase):
         self.assertIn("ci / gate", err)
 
     def test_no_develop_deploy_fails(self):
-        self.statuses.clear()
+        self.runs.clear()
         code, err = self.run_gate()
         self.assertEqual(code, 1)
         self.assertIn(f"no develop deploy before {self.sha()[:7]}: press the release button first", err)
@@ -249,17 +256,7 @@ class ReleaseGateTest(unittest.TestCase):
         code, err = self.run_gate()
         self.assertEqual(code, 0, err)
 
-    def test_develop_status_from_other_creator_ignored(self):
-        self.statuses[self.dev_sha][0]["creator"] = {"login": "someone"}
-        code, err = self.run_gate()
-        self.assertEqual(code, 1)
-        self.assertIn("no develop deploy before", err)
 
-    def test_failed_develop_status_ignored(self):
-        self.statuses[self.dev_sha][0]["state"] = "failure"
-        code, err = self.run_gate()
-        self.assertEqual(code, 1)
-        self.assertIn("no develop deploy before", err)
 
     def test_missing_e2e_on_tested_commit_fails(self):
         self.bump()
@@ -267,25 +264,9 @@ class ReleaseGateTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn(f"{self.dev_sha[:7]} has no green develop e2e: press the release button first", err)
 
-    def test_e2e_on_tested_commit_passes(self):
-        self.bump()
-        self.e2e()
-        self.e2e("failure", created_at="2026-01-01T00:00:00Z")
-        code, err = self.run_gate(require_e2e=True)
-        self.assertEqual(code, 0, err)
-        status_paths = [p for p in self.paths if "/statuses" in p]
-        self.assertTrue(all("per_page=100" in p for p in status_paths), status_paths)
-        self.assertTrue(any(f"commits/{self.dev_sha}/statuses" in p for p in status_paths[1:]), status_paths)
-        self.assertIn(f"commits/{self.dev_sha}/statuses", status_paths[-1])
-
-    def test_develop_failure_after_success_fails(self):
-        self.deploy(self.dev_sha, "failure", created_at="2026-01-02T00:00:00Z")
-        code, err = self.run_gate()
-        self.assertEqual(code, 1)
-        self.assertIn("no develop deploy before", err)
 
     def test_second_parent_develop_status_ignored(self):
-        self.statuses.clear()
+        self.runs.clear()
         self.git("checkout", "-q", "-b", "side")
         self.write("side.js", "side\n")
         self.commit("side")
@@ -306,78 +287,113 @@ class ReleaseGateTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn(f"{second[:7]} has no green develop e2e", err)
 
-    def test_newest_e2e_failing_fails(self):
-        self.bump()
-        self.e2e("failure", created_at="2026-01-03T00:00:00Z")
-        self.e2e("success", created_at="2026-01-02T00:00:00Z")
-        code, err = self.run_gate(require_e2e=True)
-        self.assertEqual(code, 1)
 
-    def test_e2e_status_from_other_creator_fails(self):
-        self.bump()
-        self.e2e(creator={"login": "someone"})
-        code, err = self.run_gate(require_e2e=True)
-        self.assertEqual(code, 1)
-        self.assertIn("has no green develop e2e: press the release button first", err)
 
     def assert_no_develop_deploy(self):
         code, err = self.run_gate()
         self.assertEqual(code, 1)
         self.assertIn("no develop deploy before", err)
 
-    def test_status_from_pr_branch_run_ignored(self):
-        self.statuses.clear()
-        self.deploy(self.dev_sha, event="pull_request")
-        self.assert_no_develop_deploy()
 
-    def test_status_from_other_workflow_ignored(self):
-        self.statuses.clear()
+
+
+
+
+
+
+
+
+    def test_e2e_job_on_tested_commit_passes(self):
+        self.bump()
+        self.e2e()
+        code, err = self.run_gate(require_e2e=True)
+        self.assertEqual(code, 0, err)
+
+    def test_e2e_job_failed_fails(self):
+        self.bump()
+        self.e2e("failure")
+        code, err = self.run_gate(require_e2e=True)
+        self.assertEqual(code, 1)
+        self.assertIn(f"{self.dev_sha[:7]} has no green develop e2e: press the release button first", err)
+
+    def test_e2e_job_not_required_without_flag(self):
+        self.bump()
+        code, err = self.run_gate()
+        self.assertEqual(code, 0, err)
+
+    def test_non_dispatch_runs_ignored(self):
+        for event in ("pull_request", "push", "schedule"):
+            self.runs.clear()
+            self.deploy(self.dev_sha, event=event)
+            self.assert_no_develop_deploy()
+
+    def test_other_workflow_path_ignored(self):
+        self.runs.clear()
         self.deploy(self.dev_sha, path=".github/workflows/other.yml")
         self.assert_no_develop_deploy()
 
-    def test_status_run_on_other_branch_ignored(self):
-        self.statuses.clear()
+    def test_path_with_ref_suffix_counts(self):
+        self.runs.clear()
+        self.deploy(self.dev_sha, path=".github/workflows/release-candidate.yml@refs/heads/main")
+        code, err = self.run_gate()
+        self.assertEqual(code, 0, err)
+
+    def test_run_on_other_branch_ignored(self):
+        self.runs.clear()
         self.deploy(self.dev_sha, head_branch="feature")
         self.assert_no_develop_deploy()
 
-    def test_status_run_head_sha_mismatch_ignored(self):
-        self.statuses.clear()
+    def test_run_head_sha_mismatch_ignored(self):
+        self.runs.clear()
         self.deploy(self.dev_sha, head_sha="f" * 40)
+        self.loose_runs = True
         self.assert_no_develop_deploy()
 
-    def test_status_without_run_url_ignored(self):
-        for url in ("", "https://github.com/other/repo/actions/runs/1000", "https://example.com/o/r/actions/runs/1000"):
-            self.statuses.clear()
-            self.deploy(self.dev_sha, url=url or None)
-            if not url:
-                self.statuses[self.dev_sha][0]["target_url"] = ""
+    def test_develop_job_failed_or_missing_not_tested(self):
+        for state in ("failure", "skipped", None):
+            self.runs.clear()
+            self.deploy(self.dev_sha, state)
             self.assert_no_develop_deploy()
+        self.runs.clear()
+        self.deploy(self.dev_sha, job="plan")
+        self.assert_no_develop_deploy()
 
-    def test_failed_run_with_status_still_counts(self):
-        self.statuses.clear()
+    def test_failed_run_with_green_develop_job_counts(self):
+        self.runs.clear()
         self.deploy(self.dev_sha, conclusion="failure")
         self.bump()
         code, err = self.run_gate()
         self.assertEqual(code, 0, err)
 
-    def test_run_lookup_error_fails_closed(self):
-        self.run_error = True
+    def test_rerun_uses_latest_attempt(self):
+        self.runs.clear()
+        rid = self.deploy(self.dev_sha, "failure")
+        self.assert_no_develop_deploy()
+        self.jobs[rid] = [{"name": "cd / develop-status", "conclusion": "success"}]
+        self.bump()
+        code, err = self.run_gate()
+        self.assertEqual(code, 0, err)
+        self.assertTrue(any("filter=latest" in p for p in self.paths), self.paths)
+
+    def test_default_branch_other_than_main_honoured(self):
+        self.default_branch = "trunk"
+        self.runs[0]["head_branch"] = "main"
+        self.assert_no_develop_deploy()
+        self.runs[0]["head_branch"] = "trunk"
+        self.bump()
+        code, err = self.run_gate()
+        self.assertEqual(code, 0, err)
+
+    def test_api_error_fails_closed(self):
+        self.api_error = True
         code, err = self.run_gate()
         self.assertEqual(code, 1)
-        self.assertIn(f"could not verify cd/develop on {self.dev_sha[:7]}: press the release button first", err)
+        self.assertIn(f"could not verify develop deploys on {self.sha()[:7]}: press the release button first", err)
 
-    def test_forged_success_does_not_mask_genuine_failure(self):
-        self.deploy(self.dev_sha, "failure", created_at="2026-01-02T00:00:00Z")
-        self.deploy(self.dev_sha, created_at="2026-01-03T00:00:00Z", event="pull_request")
+    def test_forged_status_has_no_effect(self):
+        self.runs.clear()
         self.assert_no_develop_deploy()
-
-    def test_forged_e2e_status_ignored(self):
-        self.bump()
-        self.e2e()
-        self.statuses[self.dev_sha][-1]["target_url"] = ""
-        code, err = self.run_gate(require_e2e=True)
-        self.assertEqual(code, 1)
-        self.assertIn("has no green develop e2e", err)
+        self.assertEqual(self.status_reads, [])
 
 
 if __name__ == "__main__":

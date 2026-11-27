@@ -53,6 +53,7 @@ jobs:
       contents: read
       statuses: write
       checks: read
+      actions: read # the master gate reads the develop button's runs and jobs
     secrets: inherit
     with:
       environment: master

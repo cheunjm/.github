@@ -260,6 +260,7 @@ jobs:
       contents: read
       statuses: write
       checks: read
+      actions: read
     uses: ./.github/workflows/cd.yml
     with:
       environment: master

@@ -3,12 +3,13 @@
 
   gate.py --sha SHA --version X.Y.Z [--require-e2e]   (--tag is accepted and ignored)
 
-Needs GH_TOKEN (gh) and a full-history checkout. Fails in this order: not on main;
-`ci / gate` not green on the SHA; no `cd/develop` success (from github-actions[bot],
-whose target_url is a workflow_dispatch run of release-candidate.yml on the default
-branch at that commit) in the SHA's first-parent history, 100 commits back at most; code differs from the
-newest such commit (the tested commit) beyond version fields, CHANGELOG.md and
-.changeset/; (--require-e2e) the tested commit has no green `cd/e2e-develop` status.
+Needs GH_TOKEN (gh, `actions: read`) and a full-history checkout. Fails in this order: not
+on main; `ci / gate` not green on the SHA; no develop deploy in the SHA's first-parent
+history, 100 commits back at most (a deploy is a workflow_dispatch run of
+release-candidate.yml on the default branch at that commit with a successful
+`develop-status` job; commit statuses are never read); code differs from the newest such
+commit (the tested commit) beyond version fields, CHANGELOG.md and .changeset/;
+(--require-e2e) the tested commit has no run with a successful `e2e-status` job.
 Every failure message ends in `press the release button first`.
 """
 
@@ -16,17 +17,16 @@ import argparse
 import copy
 import json
 import os
-import re
 import subprocess
 import sys
 import urllib.parse
 
 CI_CHECK = "ci / gate"
-E2E_CONTEXT = "cd/e2e-develop"
+DEVELOP_JOB = "develop-status"
+E2E_JOB = "e2e-status"
 CI_APP_ID = 15368
-DEVELOP_CONTEXT = "cd/develop"
-STATUS_CREATOR = "github-actions[bot]"
-RELEASE_WORKFLOW = ".github/workflows/release-candidate.yml"
+RELEASE_WORKFLOW_FILE = "release-candidate.yml"
+RELEASE_WORKFLOW = ".github/workflows/" + RELEASE_WORKFLOW_FILE
 SEARCH_DEPTH = 100
 HINT = "press the release button first"
 MISSING = object()
@@ -51,55 +51,75 @@ def on_main(cwd, sha):
     return git(cwd, "merge-base", "--is-ancestor", sha, base, check=False).returncode == 0
 
 
-class UnverifiedStatus(Exception):
+class UnverifiedDeploys(Exception):
     pass
 
 
-def from_release_run(api, repo, sha, status, cache):
-    """True when the status links to a release-button run on the default branch at sha.
+class Deploys:
+    """Develop deploys proven by the jobs of release-button runs, never by commit statuses.
 
-    Any job token can post as github-actions[bot], so the creator alone proves nothing.
-    The run's conclusion is not checked: a later failing step leaves the deploy standing.
+    A commit status can be posted by any job token, so it proves nothing. A run of the
+    repo's release-candidate.yml, dispatched on the default branch at the commit, whose
+    cd.yml `develop-status` (or `e2e-status`) job succeeded, does. The run's own conclusion
+    is not checked: a failing Storybook leaves the deploy standing.
     """
-    m = re.fullmatch(rf"https://github\.com/{re.escape(repo)}/actions/runs/(\d+)(/.*)?", status.get("target_url") or "")
-    if not m:
-        return False
-    try:
-        if "branch" not in cache:
-            cache["branch"] = api(f"repos/{repo}").get("default_branch")
-        run = api(f"repos/{repo}/actions/runs/{m.group(1)}")
-        return (
-            run.get("event") == "workflow_dispatch"
-            and run.get("head_branch") == cache["branch"]
-            and run.get("path") == RELEASE_WORKFLOW
-            and run.get("head_sha") == sha
+
+    def __init__(self, api, repo):
+        self.api = api
+        self.repo = repo
+        self.branch = None
+        self._jobs = {}
+
+    def _get(self, path):
+        try:
+            return self.api(path)
+        except Exception as e:
+            raise UnverifiedDeploys() from e
+
+    def default_branch(self):
+        if self.branch is None:
+            self.branch = self._get(f"repos/{self.repo}").get("default_branch")
+        return self.branch
+
+    def jobs(self, run_id):
+        if run_id not in self._jobs:
+            out = self._get(f"repos/{self.repo}/actions/runs/{run_id}/jobs?filter=latest&per_page=100")
+            self._jobs[run_id] = out.get("jobs", [])
+        return self._jobs[run_id]
+
+    def runs(self, sha):
+        branch = self.default_branch()
+        q = urllib.parse.urlencode(
+            {"head_sha": sha, "event": "workflow_dispatch", "branch": branch, "per_page": 100}
         )
-    except Exception as e:
-        raise UnverifiedStatus(status.get("context")) from e
+        out = self._get(f"repos/{self.repo}/actions/workflows/{RELEASE_WORKFLOW_FILE}/runs?{q}")
+        runs = [
+            r for r in out.get("workflow_runs", [])
+            if r.get("event") == "workflow_dispatch"
+            and (r.get("path") or "").startswith(RELEASE_WORKFLOW)
+            and r.get("head_sha") == sha
+            and r.get("head_branch") == branch
+        ]
+        return sorted(runs, key=lambda r: r.get("created_at", ""), reverse=True)
+
+    def succeeded(self, sha, job_suffix):
+        """True when a qualifying run on sha has a successful job named `... / <job_suffix>`."""
+        for run in self.runs(sha):
+            for job in self.jobs(run.get("id")):
+                if (job.get("name") or "").endswith(f"/ {job_suffix}") and job.get("conclusion") == "success":
+                    return True
+        return False
 
 
-def green_status(api, repo, sha, context, cache=None):
-    """True when the newest provenance-verified `context` status on sha is success."""
-    cache = {} if cache is None else cache
-    statuses = api(f"repos/{repo}/commits/{sha}/statuses?per_page=100")
-    mine = [
-        s for s in statuses
-        if s.get("context") == context and (s.get("creator") or {}).get("login") == STATUS_CREATOR
-    ]
-    mine = [s for s in mine if from_release_run(api, repo, sha, s, cache)]
-    newest = max(mine, key=lambda s: s.get("created_at", ""), default=None)
-    return bool(newest) and newest.get("state") == "success"
-
-
-def tested_commit(api, repo, cwd, sha, cache=None):
+def tested_commit(deploys, cwd, sha):
     """Newest commit in sha's first-parent history (sha included) deployed to develop."""
     commits = git(cwd, "rev-list", "--first-parent", "-n", str(SEARCH_DEPTH), sha).stdout.split()
     for c in commits:
         try:
-            if green_status(api, repo, c, DEVELOP_CONTEXT, cache):
+            if deploys.succeeded(c, DEVELOP_JOB):
                 return c
-        except UnverifiedStatus as e:
-            raise UnverifiedStatus(f"could not verify {e} on {c[:7]}") from e
+        except UnverifiedDeploys as e:
+            raise UnverifiedDeploys(f"could not verify develop deploys on {c[:7]}") from e
     return None
 
 
@@ -183,10 +203,10 @@ def check(sha, version, require_e2e, api=gh_api, cwd=".", repo=None):
     if not latest or latest.get("conclusion") != "success":
         return fail(f"`{CI_CHECK}` is not green on {sha}: {HINT}")
 
-    cache = {}
+    deploys = Deploys(api, repo)
     try:
-        tested = tested_commit(api, repo, cwd, sha, cache)
-    except UnverifiedStatus as e:
+        tested = tested_commit(deploys, cwd, sha)
+    except UnverifiedDeploys as e:
         return fail(f"{e}: {HINT}")
     if not tested:
         return fail(f"no develop deploy before {sha[:7]}: {HINT}")
@@ -196,9 +216,9 @@ def check(sha, version, require_e2e, api=gh_api, cwd=".", repo=None):
 
     if require_e2e:
         try:
-            e2e_ok = green_status(api, repo, tested, E2E_CONTEXT, cache)
-        except UnverifiedStatus as e:
-            return fail(f"could not verify {e} on {tested[:7]}: {HINT}")
+            e2e_ok = deploys.succeeded(tested, E2E_JOB)
+        except UnverifiedDeploys:
+            return fail(f"could not verify develop deploys on {tested[:7]}: {HINT}")
         if not e2e_ok:
             return fail(f"{tested[:7]} has no green develop e2e: {HINT}")
 
