@@ -1,5 +1,11 @@
 # .github
 
+## 1.2.0
+
+### Minor Changes
+
+- [#151](https://github.com/cheunjm/.github/pull/151) [`a29d417`](https://github.com/cheunjm/.github/commit/a29d41742df0fcfd507bb4168636ea570b76b451) Thanks [@cheunjm](https://github.com/cheunjm)! - e2e-maestro: run Android on the Mac Studio (macOS arm64 emulator with a saved quick-boot snapshot) and default `android-runner` to `mac-studio-android` and `ios-runner` to `mac-studio-ios`.
+
 ## 1.1.2
 
 ### Patch Changes
