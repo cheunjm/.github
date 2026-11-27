@@ -1,6 +1,6 @@
 {
   "name": ".github",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "private": true,
   "description": "Metadata only: hosts changesets versioning for this repo. No dependencies."
 }

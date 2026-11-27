@@ -1,5 +1,21 @@
 # .github
 
+## 1.5.0
+
+### Minor Changes
+
+- [#167](https://github.com/cheunjm/.github/pull/167) [`1c3dd0b`](https://github.com/cheunjm/.github/commit/1c3dd0b351c65af875cfdf7c04702ca8dbcfd869) Thanks [@cheunjm](https://github.com/cheunjm)! - cd.yml runs the D46 master release gate in plan and posts one Slack release summary from a notify job.
+
+- [#167](https://github.com/cheunjm/.github/pull/167) [`1c3dd0b`](https://github.com/cheunjm/.github/commit/1c3dd0b351c65af875cfdf7c04702ca8dbcfd869) Thanks [@cheunjm](https://github.com/cheunjm)! - cd.yml gains working_directory, and this repo self-tests it with dry runs against an Expo fixture; the release and production button callers ship as templates in fixtures/callers.
+
+- [#167](https://github.com/cheunjm/.github/pull/167) [`1c3dd0b`](https://github.com/cheunjm/.github/commit/1c3dd0b351c65af875cfdf7c04702ca8dbcfd869) Thanks [@cheunjm](https://github.com/cheunjm)! - Add the shared `cd.yml` deploy workflow (backend, app, web, Storybook and e2e checkboxes for the develop and master buttons) with its `scripts/cd_plan.py` and `scripts/cd_app.py` helpers.
+
+- [#166](https://github.com/cheunjm/.github/pull/166) [`b09f437`](https://github.com/cheunjm/.github/commit/b09f437751306606e8ee33e5768d2bd2e4c6ed75) Thanks [@cheunjm](https://github.com/cheunjm)! - The release button no longer cuts rc tags or GitHub prereleases, and the production gate checks the newest commit deployed to develop instead of the latest rc.
+
+### Patch Changes
+
+- [#171](https://github.com/cheunjm/.github/pull/171) [`8c0a15d`](https://github.com/cheunjm/.github/commit/8c0a15d2d89fa0fa9b3192bad04dd1f3a433bc6b) Thanks [@cheunjm](https://github.com/cheunjm)! - The release gate now proves develop deploys from the release-button run jobs (develop-status, e2e-status) instead of commit statuses, so a forged status cannot unlock production.
+
 ## 1.4.0
 
 ### Minor Changes
