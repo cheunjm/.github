@@ -617,5 +617,64 @@ class SharedFingerprintTest(unittest.TestCase):
         self.assertNotIn("build:list", r.stdout)
 
 
+class ModesTest(unittest.TestCase):
+    """The Slack post reads each release platform's outcome from the app job's output."""
+
+    def run_modes(self, builds):
+        modes = {}
+        cd_app.run_platforms(
+            cfg(),
+            EAS,
+            ["android", "ios"],
+            fingerprints=lambda p: (H, "other"),
+            list_builds=lambda p, h: builds if p == "android" else [],
+            runner=lambda step: 0,
+            log=lambda *_: None,
+            modes=modes,
+        )
+        return modes
+
+    def test_ota_then_build_or_build_only(self):
+        modes = self.run_modes([build()])
+        self.assertEqual(modes, {"android": "OTA + build", "ios": "build only"})
+
+    def test_e2e_only_platforms_have_no_mode(self):
+        modes = {}
+        cd_app.run_platforms(
+            cfg(platforms=["android"], e2e=True),
+            EAS,
+            ["android", "ios"],
+            fingerprints=lambda p: (H, "other"),
+            list_builds=lambda p, h: [],
+            runner=lambda step: 0,
+            log=lambda *_: None,
+            modes=modes,
+        )
+        self.assertEqual(modes, {"android": "build only"})
+
+    def test_format_modes(self):
+        self.assertEqual(
+            cd_app.format_modes({"android": "OTA + build", "ios": "build only"}),
+            "android=OTA + build,ios=build only",
+        )
+        self.assertEqual(cd_app.format_modes({}), "")
+
+    def test_cli_writes_modes_output(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "eas.json").write_text(json.dumps(EAS))
+            (root / "builds.json").write_text(json.dumps([build()]))
+            out = root / "gh_output"
+            r = subprocess.run(
+                [sys.executable, str(SCRIPT), "run", "--dry-run", "--environment", "develop",
+                 "--message", "m", "--platforms", "android", "--out", str(root / "out"),
+                 "--fingerprint", "android=" + H, "--builds-json", "android=" + str(root / "builds.json")],
+                cwd=root, capture_output=True, text=True,
+                env={"PATH": "/nonexistent", "GITHUB_OUTPUT": str(out)},
+            )
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("modes=android=OTA + build\n", out.read_text())
+
+
 if __name__ == "__main__":
     unittest.main()
