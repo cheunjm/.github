@@ -397,6 +397,7 @@ D20–D23 came from the builder check on 2026-11-24.
   - **Fallback:** a caller can pass a Linux `android-runner` (for example `ubuntu-latest`) to return to the KVM path.
 - **Rationale:** Jace chose to run the platforms side by side on the Studio. The snapshot targets the boot cost, and per-runner AVDs and ports let repos share the host.
 - **Risks:** CPU and memory contention with Xcode builds and Ollama, and disk (about 29 GB free when chosen; each AVD with its snapshot takes several GB). Revisit if boots keep timing out.
+- **Verified:** arami run 45933750356 ran both suites side by side: the first Android boot took 57 s and saved the snapshot, and the snapshot boot took 7 s. The earlier timeouts came from swap: Ollama held `llama3.2:1b` at a 128k context (12 GB, never unloaded), now capped at 8k (dotclaw#386). The Studio's dev Supabase stacks hold ports 54xxx–57xxx, so callers put the e2e stacks outside that block (arami: 5832x iOS, 5842x Android).
 - **Proposed by:** human (runners per platform), ai (snapshot, ports, backend isolation)
 - **Chosen by:** human
 - **Impact:** med
