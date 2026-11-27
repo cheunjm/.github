@@ -37,7 +37,7 @@ Repos in scope (D3): arami, claude-statusline, clipsync, conventions, dotclaw, e
 - **Shared `cd` orchestrator (D7):**
   - **Checklist (D40):** `backend` (Supabase `db push`, `functions deploy`), `app` (EAS), `web` (Vercel through the CLI with prebuilt output), `storybook` and `e2e`, ticked per run on the button. They always run in the order backend, app, web, storybook, e2e.
   - **Environment:** set by the button that calls `cd` (D40, D41). The release button deploys `develop`; the production button deploys `master` from a `vX.Y.Z` tag. Tags and pushes to `main` deploy nothing. There are exactly two environments.
-  - **Release gate:** `master` deploys keep `verify-release`: the commit is on `main` and `ci / gate` passed on that SHA (D22.2). They also check that the latest prerelease of `X.Y.Z` is an `rc` (D27), that the release commit's code matches it, ignoring version fields, `CHANGELOG.md` and `.changeset/`, and that the rc passed develop e2e (D45). Otherwise the deploy fails with "cut a new rc first" (D26).
+  - **Release gate:** `master` deploys keep `verify-release`: the commit is on `main` and `ci / gate` passed on that SHA (D22.2). They also find the newest commit before the release with a green develop deploy (`cd/develop`), check that the release commit's code matches it, ignoring version fields, `CHANGELOG.md` and `.changeset/`, and that it passed develop e2e (`cd/e2e-develop`, D45). Otherwise the deploy fails with "press the release button first" (D46; this replaced the rc gate of D26/D27).
   - **App (D44):** per platform, an OTA when a build of the current fingerprint exists (D8), then always a new build with `eas build --local` on `mac-studio` (D9): develop goes to Firebase and the sideload APK, master to the App Store, Play Store and Firebase. `app.json`'s version equals `package.json`'s.
   - **Migrations (D42, D43):** expand, then contract; destructive SQL fails CI unless marked as a contract step with a `minor` changeset.
   - **Web:** one Vercel project per environment, with project IDs and the Doppler token held in the GitHub Environments `develop` and `master` (D22.4).
@@ -107,7 +107,7 @@ Each stage is one PR per repo it touches. In `.github`, a stage may be a small s
 
    Then drop `[skip ci]` from openwiki's merge subject, so wiki merges report `ci / gate` on `main` for the release button, and file the minimum-app-version issues (D42).
 
-   Done when each app repo has had a develop deploy from the release button and a production deploy from the production button, each posting to Slack with e2e green, and a production deploy with code newer than the latest rc has failed with "cut a new rc first". ui's Storybook must be live at both Storybook project URLs.
+   Done when each app repo has had a develop deploy from the release button and a production deploy from the production button, each posting to Slack with e2e green, and a production deploy with code newer than the last develop deploy has failed with "press the release button first" (D46). ui's Storybook must be live at both Storybook project URLs.
 5. **`v2`.** Remove the deprecated `ci-node.yml`, `changeset-prerelease.yml` (D27), the `OPENWIKI_RUNNER` fallback (D28) and any other deprecated inputs. Done when no caller references `ci-node`, `.github` publishes `v2.0.0`, and callers move to `@v2`.
 
 ## Verification
@@ -125,9 +125,9 @@ Each stage is one PR per repo it touches. In `.github`, a stage may be a small s
   - a push to `main` that deploys nothing;
   - a real develop deploy from the release button, checking the Slack message, the Vercel URL, the build and Firebase distribution, that the OTA was skipped on the first run and published on the second, that Supabase migrations ran first, and that e2e passed on the deployed app;
   - the button refusing to tag while `ci / gate` is red on the `main` HEAD;
-  - in ui, a `next` cut publishes `X.Y.Z-next.N` to the `next` dist-tag, and a production press whose latest prerelease is a `next` fails;
+  - in ui, a button press publishes `X.Y.Z-next.N` to the `next` dist-tag with `N` from the registry, and creates no git tag (D46);
   - after the next Version PR, a production press with `web` off: store submission, Firebase and smoke e2e, with no data left in production; then a press with only `web`;
-  - a merge after the last rc, then the Version PR: the production press fails with "cut a new rc first", and passes after a new rc;
+  - a merge after the last develop deploy, then the Version PR: the production press fails with "press the release button first", and passes after a new develop deploy;
   - a destructive migration without the contract marker fails CI;
   - for ui, the develop and master Storybook URLs serve the current build.
 - **Secrets:** a sync script dry-run, then a real run. For each repo, `gh secret list` shows the manifest's names.
@@ -146,7 +146,7 @@ Each stage is one PR per repo it touches. In `.github`, a stage may be a small s
 - **Slot:** one fixed CI job in the shared `ci` (lint, typecheck, test, format, audit, build), switched on by its command or preset.
 - **Gate:** the `ci / gate` job. It fails if any slot fails or is cancelled, and skipped slots pass. It is the only CI check a ruleset requires.
 - **develop / master:** the two deploy environments. They are also Doppler configs, EAS profiles and channels, GitHub Environments, and one Vercel project each.
-- **Release button, `next`, `rc`:** a `vX.Y.Z-next.N` or `vX.Y.Z-rc.N` tag on `main`, cut by running the repo's `release-candidate` workflow, which then deploys develop with its checklist in the same run. It is the only thing that deploys develop (D26, D40). Only an `rc` can ship to master (D27).
+- **Release button:** the repo's `release-candidate` workflow, which deploys the `main` HEAD to develop with its checklist in the same run and marks that commit with `cd/develop` (and `cd/e2e-develop`). It is the only thing that deploys develop (D26, D40), and production ships only code a press deployed (D46). It creates no tag; the earlier `next`/`rc` prerelease tags are retired.
 - **Production button:** the repo's `release-production` workflow; it deploys a `vX.Y.Z` tag to master with the same checklist (D41).
 - **Fingerprint:** the Expo native fingerprint used as `runtimeVersion`. An OTA is published only to a fingerprint that already has a build (D44).
 - **Expand / contract:** changing a column over two releases: add the new shape first, remove the old one once no supported app reads it (D42).
@@ -591,8 +591,8 @@ Runs after arami (Task 11) and starlog (Task 12) have moved to `@v1`, so `@main`
 
 **Architecture:**
 - **Task 1 first:** fingerprint checks in each app. A failure there changes Tasks 5 and 8–11 before any code is written.
-- **`.github`, two releases.** v1.3.0: the `studio-lock` and `release-gate` actions, the lock and installed-app mode in `e2e-maestro`, and the migration and version guards (Tasks 2–4). v1.4.0: `cd.yml`, its gate and Slack, the Expo fixture and the button self-test (Tasks 5–7). `cd`'s blocks are jobs inside `cd.yml`; tested logic lives in actions and workflows that ship one release earlier, so `cd` can pin them to `@v1` (D39.1).
-- **Buttons are callers.** Each app repo has `release-candidate.yml` (job `cut` calls `release-candidate.yml@v1`, job `cd` calls `cd.yml@v1` with `environment: develop` and the cut tag) and `release-production.yml` (job `cd` with `environment: master` and a `vX.Y.Z` tag). Tags trigger nothing.
+- **`.github`, two releases.** v1.3.0: the `studio-lock` and `release-gate` actions, the lock and installed-app mode in `e2e-maestro`, the migration and version guards, and dropping prerelease tags (Tasks 2–4b, D46). v1.4.0: `cd.yml`, its gate and Slack, the Expo fixture and the button self-test (Tasks 5–7). `cd`'s blocks are jobs inside `cd.yml`; tested logic lives in actions and workflows that ship one release earlier, so `cd` can pin them to `@v1` (D39.1).
+- **Buttons are callers.** Each app repo has `release-candidate.yml` (job `cut` calls `release-candidate.yml@v1`, which checks and computes the version and creates no tag (D46); job `cd` calls `cd.yml@v1` with `environment: develop` and `ref: <the cut job's ref output>`) and `release-production.yml` (job `cd` with `environment: master` and a `vX.Y.Z` tag). Tags trigger nothing.
 - **Repos, one PR each, in order:** starlog (Task 8), arami (Task 9), ui (Task 10), give-and-take (Task 11). Then openwiki drops `[skip ci]` (Task 12) and the follow-up issues are filed (Task 13).
 
 **Tech stack:** GitHub Actions YAML, bash, Python 3 stdlib (lock and gate scripts), `eas-cli` 27.11.0, Supabase CLI 3.2.0, `vercel@65`, `firebase-tools@15.8.0`, Doppler CLI, Maestro 2.12.1, `gh`, `actionlint`.
@@ -602,7 +602,8 @@ Runs after arami (Task 11) and starlog (Task 12) have moved to `@v1`, so `@main`
 - **Order:** backend → app → web → storybook → e2e → notify. A failed backend skips app, web and e2e. A Storybook failure blocks nothing. e2e runs only when app, and web if ticked, succeeded (D40, D42).
 - **Environment:** only `cd`'s `environment` input, set by the button caller (`develop` or `master`). Empty deploys nothing; `cd` has no push or tag trigger (D40, D41).
 - **Checklist:** booleans `backend`, `app`, `web`, `storybook`, `e2e`, plus `ignore_pending_migrations` (default false). Each caller's `workflow_dispatch` defaults them to what the repo has; e2e defaults on in both buttons (D40).
-- **Master gate:** the commit is on `main`; `ci / gate` passed on it; the latest prerelease of `X.Y.Z` is an `rc`; the code matches that rc except version fields (`package.json`, `package-lock.json`, `app.json`), `CHANGELOG.md` and `.changeset/`; and, in repos with e2e, the rc's commit carries a green `cd/e2e-develop` status. Every failure message ends in `cut a new rc first` (D26, D27, D45).
+- **Master gate (D46):** the commit is on `main`; `ci / gate` passed on it; the newest commit in its first-parent history (itself included, at most 100 back) with a `cd/develop` success from `github-actions[bot]` is the tested commit; the code matches it except version fields (`package.json`, `package-lock.json`, `app.json`), `CHANGELOG.md` and `.changeset/`; and, in repos with e2e, the tested commit carries a green `cd/e2e-develop` status. Every failure message ends in `press the release button first`.
+- **Develop proof (D46):** after a successful develop deploy `cd` sets status `cd/develop` on the deployed commit, and after green develop e2e `cd/e2e-develop`, both with the job token. No prerelease tags anywhere.
 - **App step, per platform (D44):**
   1. `eas fingerprint:generate -p <p> -e <env> --json`.
   2. If a finished build with that hash exists (`eas build:list --fingerprint-hash`), publish the OTA first: `doppler run -- eas update --channel <env> --environment <preview|production> --platform <p> --message <tag>`.
@@ -649,7 +650,7 @@ No code unless a check fails. Run in a scratch worktree of starlog, arami and gi
 - `lock.py release --dir <d> --slot <i> --owner-id <run_id>-<job>` removes the slot only if it holds that owner id.
 - A slot is the directory `<d>/slot-<i>` created with `os.mkdir` (atomic), holding `owner.json` `{id, pid, repo, run_url, acquired_at}`. `pid` is the job's `Runner.Worker` process (nearest ancestor with that name). A slot whose `pid` is not alive is free.
 - `studio-lock` inputs: `mode` (`acquire` | `release`), `slots` (default `2`), `timeout-minutes` (default `120`), `slot` (release only). Output `slot`. Lock dir: `~/Library/Caches/cheunjm-studio-lock`.
-- `gate.py --sha <sha> --tag <tag|''> --version <X.Y.Z> [--require-e2e]` (needs `GH_TOKEN`, full-history checkout). Fails in this order: not on `main` (`git merge-base --is-ancestor`); `ci / gate` not `success` on the SHA; the highest-`N` prerelease tag of `X.Y.Z` across channels is not `-rc.` (`latest prerelease of X.Y.Z is not an rc: cut a new rc first`); the diff from that rc minus `CHANGELOG.md` and `.changeset/*` touches anything but `package.json`, `package-lock.json`, `app.json`, or their changed lines aren't all `"version": ` lines (`code differs from <rc>: cut a new rc first`); with `--require-e2e`, the rc's commit has no `success` status `cd/e2e-develop` (`<rc> has no green develop e2e: cut a new rc first`). The GitHub API call is an injected function, so tests need no network.
+- (Shipped as below in #158, then replaced by Task 4b's develop-deploy gate, D46.) `gate.py --sha <sha> --tag <tag|''> --version <X.Y.Z> [--require-e2e]` (needs `GH_TOKEN`, full-history checkout). Fails in this order: not on `main` (`git merge-base --is-ancestor`); `ci / gate` not `success` on the SHA; the highest-`N` prerelease tag of `X.Y.Z` across channels is not `-rc.` (`latest prerelease of X.Y.Z is not an rc: cut a new rc first`); the diff from that rc minus `CHANGELOG.md` and `.changeset/*` touches anything but `package.json`, `package-lock.json`, `app.json`, or their changed lines aren't all `"version": ` lines (`code differs from <rc>: cut a new rc first`); with `--require-e2e`, the rc's commit has no `success` status `cd/e2e-develop` (`<rc> has no green develop e2e: cut a new rc first`). The GitHub API call is an injected function, so tests need no network.
 
 - [ ] **Step 1:** `scripts/test_studio_lock.py` (unittest, temp dirs): `test_two_owners_get_different_slots`, `test_third_owner_times_out` (timeout 0 → exit 1 and the message), `test_dead_owner_slot_is_reused` (owner pid 999999 → acquired), `test_release_ignores_foreign_owner`, `test_release_frees_slot`.
 - [ ] **Step 2:** `python3 -m unittest scripts/test_studio_lock.py`. Expected: fails (no `lock.py`).
@@ -681,6 +682,18 @@ No code unless a check fails. Run in a scratch worktree of starlog, arami and gi
 - [ ] **Step 3:** `app-json`: a fixture run of the version script on `fixtures/expo` shows `app.json` at the bumped version. Then merge the v1.3.0 stack (Tasks 2–4), merge the Version PR, confirm `v1` moved.
 - [ ] **Step 4:** prove the lock: dispatch arami `e2e.yml` while a second heavy Studio job runs. Expected: `slot=0`/`slot=1`, a third heavy job waits with the holder named, and `ls ~/Library/Caches/cheunjm-studio-lock` is empty afterwards.
 
+### Task 4b: drop prerelease tags (D46)
+
+**Files:** modify `.github/workflows/release-candidate.yml`, `.github/actions/release-gate/{action.yml,gate.py}`, `scripts/test_release_gate.py`, `rc-selftest.yml`, `CLAUDE.md` (two rows); `minor` changeset. Ships in v1.3.0 with Tasks 2–4.
+
+**Interfaces (produces):**
+- `release-candidate.yml`: same checks as today (default branch, `ci / gate` green, not in pre mode); no tag, no GitHub prerelease. Outputs `version` (`X.Y.Z`), `ref` (the SHA), `tag` (always `''`, kept for callers until v2). `channel` is accepted; with `publish: true` it publishes `X.Y.Z-next.N` under dist-tag `next`, `N` = highest `X.Y.Z-next.*` from `npm view <pkg> versions --json` plus one (0 when none).
+- `gate.py --sha <sha> --version <X.Y.Z> [--require-e2e]` (`--tag` accepted, ignored): on `main`; `ci / gate` from app 15368; tested commit = newest in `git rev-list --first-parent -n 100 <sha>` with a `cd/develop` `success` status from `github-actions[bot]` (`no develop deploy before <sha7>: press the release button first`); code equal except the allowed files and fields, as today (`code differs from the last develop deploy <t7>: press the release button first`); with `--require-e2e`, `cd/e2e-develop` success from `github-actions[bot]` on the tested commit (`<t7> has no green develop e2e: press the release button first`). The prerelease/releases API logic is removed.
+
+- [ ] **Step 1:** tests first: replace the prerelease tests with `test_no_develop_deploy_fails`, `test_newest_develop_deploy_is_used`, `test_code_after_develop_deploy_fails`, `test_version_only_after_develop_deploy_passes`, `test_develop_status_from_other_creator_ignored`, `test_missing_e2e_on_tested_commit_fails`; keep the rename, JSON, type-strict and CI-app tests. Run; expected fail.
+- [ ] **Step 2:** implement; tests pass. `release-candidate.yml` dry run in `rc-selftest.yml` prints `version`, `ref` and no tag; `actionlint` clean.
+- [ ] **Step 3:** PR, review, merge; then release v1.3.0 (Task 4 Step 3's release step moves here).
+
 ### Task 5: `cd.yml`
 
 **Files:** create `.github/workflows/cd.yml`.
@@ -690,7 +703,8 @@ No code unless a check fails. Run in a scratch worktree of starlog, arami and gi
 | Input | Default | Use |
 |---|---|---|
 | `environment` | `''` | `develop` \| `master`, set by the button caller |
-| `tag` | `''` | the tag to check out and deploy |
+| `tag` | `''` | master: the `vX.Y.Z` tag to check out and deploy |
+| `ref` | `''` | develop: the SHA to check out and deploy (the button's `ref` output, D46) |
 | `dry_run` | `false` | resolve and print; deploy nothing |
 | `backend` | `false` | `supabase link`, then `migration list --linked` (fail on a remote-only migration, D23), `db push --yes`, `functions deploy --use-api --yes` |
 | `ignore_pending_migrations` | `false` | when `backend` is off and local migrations are missing remotely, `plan` fails unless this is set |
@@ -721,7 +735,8 @@ Jobs (each target job `needs: plan`, `environment: ${{ needs.plan.outputs.enviro
 - **`app`** (`eas_runner`, timeout 180): `needs: [plan, backend]`, `if: !failure() && !cancelled()`. Syncs Doppler `EXPO_PUBLIC_*` into the EAS environment (port of `scripts/sync-doppler-to-eas.sh`), sets `expo.version` to `version`, then the app step per platform. When `e2e` is on, it also makes sure the `e2e-<env>` build for the fingerprint exists (build and upload when missing) and uploads it as artifact `e2e-app-<platform>`.
 - **`web`**, **`storybook`** (ubuntu): `needs: [plan, backend]`; storybook also `needs: web` without blocking on its failure.
 - **`e2e`**: `needs: [plan, app, web]`, `if: !failure() && !cancelled()`; `uses: cheunjm/.github/.github/workflows/e2e-maestro.yml@v1` with `platforms: e2e_platforms`, `app-artifact: e2e-app`, `flows-path: e2e_flows`, `include-tags: smoke` on master, `secrets: inherit`. Test accounts reach flows as `E2E_EMAIL` and `E2E_PASSWORD` for the job's platform.
-- **`e2e-status`** (ubuntu, develop only, after `e2e` succeeds): sets commit status `cd/e2e-develop` = `success` on the tag's commit.
+- **`develop-status`** (ubuntu, develop only, after every ticked target succeeded): sets commit status `cd/develop` = `success` on `ref`, with `GITHUB_TOKEN`.
+- **`e2e-status`** (ubuntu, develop only, after `e2e` succeeds): sets commit status `cd/e2e-develop` = `success` on `ref`, with `GITHUB_TOKEN` (the gate trusts only `github-actions[bot]`).
 - With `dry_run`, every job prints its commands and the fingerprint lookup and writes nothing.
 
 - [ ] **Step 1:** write the file; `actionlint` clean.
@@ -731,7 +746,7 @@ Jobs (each target job `needs: plan`, `environment: ${{ needs.plan.outputs.enviro
 
 **Files:** modify `.github/workflows/cd.yml` (`plan` gate step, `notify` job).
 
-- [ ] **Step 1 (gate):** in `plan`, when the environment is `master`, check out the tag with `fetch-depth: 0` and run `cheunjm/.github/.github/actions/release-gate@v1` with the tag's SHA, the tag, its `X.Y.Z`, and `require-e2e: <e2e input>`.
+- [ ] **Step 1 (gate):** in `plan`, when the environment is `master`, check out the tag with `fetch-depth: 0` and run `cheunjm/.github/.github/actions/release-gate@v1` with the tag's SHA, its `X.Y.Z`, and `require-e2e: <e2e input>` (D46 gate, Task 4b).
 - [ ] **Step 2 (`notify`, ubuntu, `if: always() && inputs.slack_channel != ''`):** one `chat.postMessage` (same curl/jq pattern as `notify-merge.yml`) with repo, environment, tag, each checklist item's result (or "off"), per platform "OTA + build" or "build only", and the run URL.
 - [ ] **Step 3:** `actionlint`; commit.
 
@@ -742,7 +757,7 @@ Jobs (each target job `needs: plan`, `environment: ${{ needs.plan.outputs.enviro
 - [ ] **Step 1:** `self.yml` jobs calling `./.github/workflows/cd.yml` with `dry_run: true` and `eas_runner: ubuntu-latest` against `fixtures/expo`:
   - `cd-develop`: `environment: develop`, all checkboxes on. Expected: plan `develop`; each step prints its commands; the app step prints "no build: skip OTA, build".
   - `cd-empty`: no environment. Expected: `environment=''` and every target job skipped (Review focus 1).
-  - `cd-master-gate`: `environment: master` against `.github`'s own tags, which have no rc. Expected: `plan` fails with `latest prerelease of X.Y.Z is not an rc: cut a new rc first`; `continue-on-error` and a follow-up assertion, like `red`.
+  - `cd-master-gate`: `environment: master` against `.github`'s own latest `vX.Y.Z`, which has no `cd/develop` status. Expected: `plan` fails with `no develop deploy before <sha7>: press the release button first`; `continue-on-error` and a follow-up assertion, like `red`.
   - `cd-pending-migrations`: `backend: false` with a fixture migration missing remotely (dry-run stub). Expected: `plan` fails; with `ignore_pending_migrations: true`, it passes.
 - [ ] **Step 2:** the caller templates pass `actionlint`. Push; all self-test gates green. Merge, merge the Version PR, confirm `v1` → v1.4.0.
 
@@ -760,9 +775,9 @@ Checklist defaults (both buttons): `backend`, `app`, `web`, `e2e` on; `storybook
 - [ ] **Step 2:** test accounts: one per platform in develop and in master Supabase (Jace creates the master ones if denied); 1Password items; manifest PR; `sync-secrets.py --repo starlog --dry-run`, then a real run. Expected: `VERCEL_ORG_ID`/`VERCEL_PROJECT_ID` exist as variables.
 - [ ] **Step 3:** starlog PR; dispatch the PR branch's `release-candidate.yml` with `dry_run`. Expected: the checklist table, Supabase lists no remote-only migration, the fingerprint lookup printed.
 - [ ] **Step 4:** merge; a push to `main` deploys nothing.
-- [ ] **Step 5:** release button, all defaults. Expected: backend, app (first run: build only, then Firebase and the APK), web, e2e green on both test builds, `cd/e2e-develop` on the rc commit, one Slack message. A second press with no native change: "OTA + build".
+- [ ] **Step 5:** release button, all defaults. Expected: backend, app (first run: build only, then Firebase and the APK), web, e2e green on both test builds, `cd/develop` and `cd/e2e-develop` on the deployed commit, no new tag, one Slack message. A second press with no native change: "OTA + build".
 - [ ] **Step 6:** after the next Version PR (with `app.json` bumped in it): production button with `web` off. Expected: gate passes, backend, build, store submission and Firebase, smoke e2e green, and the production test accounts hold no leftover data. Then a press with only `web`.
-- [ ] **Step 7:** refusals: the release button on a red `ci / gate`; the production button after a merge past the last rc (`cut a new rc first`).
+- [ ] **Step 7:** refusals: the release button on a red `ci / gate`; the production button after a merge past the last develop deploy (`press the release button first`).
 
 ### Task 9: arami on `cd`
 
@@ -779,9 +794,9 @@ ui has no EAS project or app web deploy, so its checklist is `storybook` only (D
 **Files (ui):** modify `release.yml` (the button path gains the `cd` job with `storybook`; `cut` keeps `publish: true, trusted_publishing: true`, so npm's trusted publisher stays `release.yml`); create `release-production.yml` (storybook only); delete `prerelease.yml` and `.changeset/pre.json` (leave pre mode, D27); update the INF-1982 plan's versioning line; `CLAUDE.md` (drop `stage` and `ci / contrast`). GitHub Environments `develop` and `master` with `STORYBOOK_VERCEL_PROJECT_ID` for new Vercel projects `ui-storybook-develop`/`ui-storybook-master` (Jace creates projects and environments if denied); delete the leftover `Preview*`/`Production*` environments and the unused repo secrets `CHROMATIC_PROJECT_TOKEN`, `DOPPLER_TOKEN_*`, `VERCEL_PROJECT_ID*`.
 
 - [ ] **Step 1:** environments and secrets (manifest PR in `.github`, then sync).
-- [ ] **Step 2:** seed the counter: push tag `v1.0.0-next.7` (bot token) at the commit that published `1.0.0-next.7` (`git rev-list -n1 @jaemincheun/ui@1.0.0-next.7`), so the next `N` is 8. Check `npm view @jaemincheun/ui versions` has no `1.0.0-next.8`.
+- [ ] **Step 2:** check the counter: `npm view @jaemincheun/ui versions` shows `1.0.0-next.7` as the highest `1.0.0-next.*`, so the button's registry counter (D46) picks 8. No tag is pushed.
 - [ ] **Step 3:** ui PR; after merge, button `next`. Expected: `@jaemincheun/ui@1.0.0-next.8` on `next` and Storybook live at the develop URL.
-- [ ] **Step 4:** the production button while the latest prerelease is a `next` fails with `cut a new rc first`. The Version PR (`1.0.0`) stays unmerged until INF-1982 says ship (D27.2).
+- [ ] **Step 4:** the production button on a commit whose code is newer than the last develop deploy fails with `press the release button first`. The Version PR (`1.0.0`) stays unmerged until INF-1982 says ship (D27.2).
 
 ### Task 11: give-and-take, first CD and e2e
 
