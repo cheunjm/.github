@@ -21,6 +21,7 @@ jobs:
       test_command: >-
         python3 -m unittest scripts/test_studio_lock.py scripts/test_release_gate.py
         scripts/test_contract_check.py scripts/test_sync_app_json.py
+        scripts/test_cd_plan.py scripts/test_cd_app.py
       # Pinned: @latest lets a new release change what blocks every PR.
       lint_command: >-
         go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 &&
