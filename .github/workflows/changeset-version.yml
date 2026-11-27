@@ -149,25 +149,19 @@ jobs:
           mkdir -p .git/info
           printf 'node_modules/\n' >> .git/info/exclude
 
-      - name: Prepare version script
+      - name: Fetch version script
+        if: ${{ inputs.app-json != '' }}
         env:
           SCRIPTS_REF: ${{ inputs.scripts-ref }}
         run: |
-          # Runs `changeset version`, then keeps app.json in step with package.json.
-          # The script lives in cheunjm/.github (public), at `scripts-ref` (default v1),
-          # and sits under RUNNER_TEMP so `git add .` never commits it.
+          # scripts/version_with_app_json.sh runs `changeset version`, then keeps app.json in
+          # step with package.json. It lives in cheunjm/.github (public), at `scripts-ref`
+          # (default v1), under RUNNER_TEMP so `git add .` never commits it.
           dir="$(mktemp -d "$RUNNER_TEMP/cheunjm-github.XXXXXX")"
           git init -q "$dir"
           git -C "$dir" fetch -q --depth 1 https://github.com/cheunjm/.github "$SCRIPTS_REF"
           git -C "$dir" checkout -q FETCH_HEAD
-          cat > "$RUNNER_TEMP/version.sh" <<'SH'
-          set -euo pipefail
-          npx changeset version
-          if [ -n "$APP_JSON" ]; then
-            python3 "$SYNC_APP_JSON" "$APP_JSON"
-          fi
-          SH
-          echo "SYNC_APP_JSON=$dir/scripts/sync_app_json.py" >> "$GITHUB_ENV"
+          echo "VERSION_SCRIPT=$dir/scripts/version_with_app_json.sh" >> "$GITHUB_ENV"
 
       - name: Upgrade npm for trusted publishing
         if: ${{ inputs.trusted-publishing }}
@@ -193,7 +187,7 @@ jobs:
           # committing through the GitHub API.
           github-token: ${{ steps.app-token.outputs.token }}
           push-with-git-cli: true
-          version-script: bash ${{ runner.temp }}/version.sh
+          version-script: ${{ inputs.app-json != '' && format('bash {0}', env.VERSION_SCRIPT) || 'npx changeset version' }}
           publish-script: ${{ inputs.publish != '' && inputs.publish || (inputs.tag && 'npx changeset git-tag' || '') }}
           pr-title: ${{ inputs.title }}
           commit-message: ${{ inputs.title }}
@@ -201,7 +195,6 @@ jobs:
         env:
           # changelog-github reads this while `changeset version` runs.
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
-          APP_JSON: ${{ inputs.app-json }}
           # GitHub Packages publishes with the job token; trusted publishing must not
           # send a token, so npm falls back to the OIDC exchange.
           NODE_AUTH_TOKEN: ${{ !inputs.trusted-publishing && secrets.GITHUB_TOKEN || '' }}

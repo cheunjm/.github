@@ -161,17 +161,26 @@ jobs:
             [ "$rc" -eq 1 ] && grep -qF -- "$MESSAGE" out.txt
           fi
 
-  # Runs the version sync on a temp copy: app.json must land on the package.json version.
+  # Runs the real version script (changeset version with the pinned CLI, then the app.json
+  # sync) on a temp copy of fixtures/expo: app.json must land on the bumped package.json version.
   app-json-sync:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Bump a copy of fixtures/expo
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Version a copy of fixtures/expo
+        env:
+          CLI_VERSION: "3.0.3"
         run: |
           work="$(mktemp -d)"
-          cp fixtures/expo/package.json fixtures/expo/app.json "$work/"
+          cp -R fixtures/expo/. "$work/"
           cd "$work" || exit 1
-          sed -i 's/"version": "1.0.0"/"version": "2.3.4"/' package.json
-          python3 "$GITHUB_WORKSPACE/scripts/sync_app_json.py" app.json
-          [ "$(python3 -c 'import json; print(json.load(open("app.json"))["expo"]["version"])')" = "2.3.4" ]
-          cat app.json
+          git init -q
+          npm install --no-save --no-package-lock --no-audit --no-fund "@changesets/cli@$CLI_VERSION"
+          APP_JSON=app.json bash "$GITHUB_WORKSPACE/scripts/version_with_app_json.sh"
+          pkg="$(node -p 'require("./package.json").version')"
+          app="$(node -p 'require("./app.json").expo.version')"
+          echo "package.json $pkg, app.json $app"
+          [ "$pkg" = "1.1.0" ] && [ "$app" = "$pkg" ]

@@ -10,8 +10,10 @@ table or column, or changes a column type, unless the same file carries a line
 a migration with a `-- contract:` line but no changeset added by the PR gives
 this repo's package.json name `minor`.
 
-Matching is line-based and case-insensitive, on added lines only, after
-stripping `--` comments (a `--` inside a string literal also ends the line).
+Matching is per statement and case-insensitive, on added lines only: comments
+(`--` to end of line, also inside a string literal) are stripped, the lines are
+joined and split on `;`. Allowed: DROP FUNCTION/POLICY/TRIGGER/INDEX and ALTER TABLE
+DROP CONSTRAINT/DEFAULT/NOT NULL/IDENTITY/EXPRESSION.
 """
 
 import argparse
@@ -20,12 +22,14 @@ import re
 import subprocess
 import sys
 
-CONTRACT = re.compile(
-    r"\bDROP\s+(TABLE|COLUMN)\b"
-    r"|\bRENAME\s+(TO|COLUMN)\b"
-    r"|\bALTER\s+COLUMN\s+\S+\s+(SET\s+DATA\s+)?TYPE\b",
-    re.IGNORECASE,
-)
+DROP_OBJECT = re.compile(r"^DROP\s+(TABLE|VIEW|MATERIALIZED\s+VIEW)\b", re.IGNORECASE)
+ALTER_TABLE = re.compile(r"^ALTER\s+TABLE\b", re.IGNORECASE)
+# Inside ALTER TABLE: DROP COLUMN (with or without the COLUMN keyword) but not the
+# DROP CONSTRAINT / DEFAULT / NOT NULL / IDENTITY / EXPRESSION sub-commands.
+ALTER_DROP = re.compile(r"\bDROP\s+(?!CONSTRAINT\b|DEFAULT\b|NOT\s+NULL\b|IDENTITY\b|EXPRESSION\b)\S", re.IGNORECASE)
+ALTER_RENAME = re.compile(r"\bRENAME\s+(TO\b|(COLUMN\s+)?\S+\s+TO\b)", re.IGNORECASE)
+ALTER_TYPE = re.compile(r"\bALTER\s+(?:COLUMN\s+)?(?!COLUMN\b|TABLE\b)\S+\s+(?:SET\s+DATA\s+)?TYPE\b",
+                        re.IGNORECASE)
 MARKER = re.compile(r"^\s*--\s*contract:\s*safe after v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?\s*$",
                     re.MULTILINE)
 ANY_CONTRACT_LINE = re.compile(r"^\s*--\s*contract:", re.MULTILINE)
@@ -33,9 +37,50 @@ HUNK = re.compile(r"^@@ -\S+ \+(\d+)")
 CHANGESET_ENTRY = re.compile(r"""^\s*["']?(.+?)["']?\s*:\s*(major|minor|patch)\s*$""")
 
 
+def is_contract(statement):
+    if DROP_OBJECT.match(statement):
+        return True
+    if ALTER_TABLE.match(statement):
+        return bool(ALTER_DROP.search(statement) or ALTER_RENAME.search(statement) or ALTER_TYPE.search(statement))
+    return False
+
+
+def statements(lines):
+    """Split (lineno, text) pairs into (start_line, statement) on `;`, after stripping `--` comments.
+
+    A statement is flushed at a gap in line numbers, so separate hunks never merge.
+    """
+    out = []
+    parts = []
+    start = None
+    prev = None
+
+    def flush():
+        nonlocal parts, start
+        stmt = " ".join(" ".join(parts).split())
+        if stmt:
+            out.append((start, stmt))
+        parts, start = [], None
+
+    for no, text in lines:
+        if prev is not None and no != prev + 1:
+            flush()
+        prev = no
+        segments = text.split("--", 1)[0].split(";")
+        for i, seg in enumerate(segments):
+            if seg.strip():
+                if start is None:
+                    start = no
+                parts.append(seg.strip())
+            if i < len(segments) - 1:
+                flush()
+    flush()
+    return out
+
+
 def scan(diff_text):
-    """Return (file, line, text) for each added line that is a contract change."""
-    found = []
+    """Return (file, line, statement) for each added SQL statement that is a contract change."""
+    added = {}
     path = None
     line = 0
     for raw in diff_text.splitlines():
@@ -50,10 +95,13 @@ def scan(diff_text):
             line = int(m.group(1))
             continue
         if raw.startswith("+") and path:
-            text = raw[1:]
-            if CONTRACT.search(text.split("--", 1)[0]):
-                found.append((path, line, text))
+            added.setdefault(path, []).append((line, raw[1:]))
             line += 1
+    found = []
+    for path, lines in added.items():
+        for start, stmt in statements(lines):
+            if is_contract(stmt):
+                found.append((path, start, stmt))
     return found
 
 
@@ -82,7 +130,7 @@ def cmd_scan(a):
     if not specs:
         print("::error::migration paths are empty")
         return 1
-    diff = git("diff", "-U0", "--diff-filter=AM", a.base, a.head, "--", *specs)
+    diff = git("diff", "-U0", "--no-renames", "--diff-filter=AM", a.base, a.head, "--", *specs)
     bad = []
     markers = {}
     for path, line, _ in scan(diff):
@@ -114,14 +162,14 @@ def cmd_changeset(a):
     specs = pathspecs(a.paths)
     if not specs:
         return 0
-    changed = git("diff", "--name-only", "--diff-filter=AM", a.base, a.head, "--", *specs).split("\n")
+    changed = git("diff", "--name-only", "--no-renames", "--diff-filter=AM", a.base, a.head, "--", *specs).split("\n")
     contract = [f for f in changed if f and ANY_CONTRACT_LINE.search(head_text(a.head, f))]
     if not contract:
         print("No contract migration in this PR.")
         return 0
     with open("package.json") as fh:
         package = json.load(fh)["name"]
-    added = [f for f in git("diff", "--name-only", "--diff-filter=A", a.base, a.head, "--", ".changeset/*.md").split("\n")
+    added = [f for f in git("diff", "--name-only", "--no-renames", "--diff-filter=A", a.base, a.head, "--", ".changeset/*.md").split("\n")
              if f and f != ".changeset/README.md"]
     for f in added:
         if "minor" in changeset_levels(head_text(a.head, f), package):

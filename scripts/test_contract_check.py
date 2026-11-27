@@ -43,7 +43,7 @@ class ScanTest(unittest.TestCase):
         for sql in cases:
             with self.subTest(sql=sql):
                 d = diff_for("m/2.sql", ["select 1;", sql], start=10)
-                self.assertEqual(cc.scan(d), [("m/2.sql", 11, sql)])
+                self.assertEqual([(f, n) for f, n, _ in cc.scan(d)], [("m/2.sql", 11)])
 
     def test_lowercase_flagged(self):
         d = diff_for("m/3.sql", ["alter table a drop column b;"])
@@ -56,6 +56,27 @@ class ScanTest(unittest.TestCase):
     def test_column_named_type_not_flagged(self):
         d = diff_for("m/5.sql", ["alter table a alter column type set not null;"])
         self.assertEqual(cc.scan(d), [])
+
+    def test_optional_keyword_forms_flagged(self):
+        for sql in ["alter table notes drop body;", "alter table a alter b type bigint;",
+                    "alter table a rename b to c;", "alter table a drop column if exists b;",
+                    "alter table a drop column b cascade;", "drop view v;", "drop materialized view v;",
+                    "alter table a alter b set data type text;", "alter table if exists a drop b;"]:
+            with self.subTest(sql=sql):
+                self.assertEqual(len(cc.scan(diff_for("m/6.sql", [sql]))), 1)
+
+    def test_multiline_statement_flagged_at_first_line(self):
+        d = diff_for("m/7.sql", ["select 1;", "alter table a", "  alter column b", "  type bigint;"], start=5)
+        self.assertEqual([(f, n) for f, n, _ in cc.scan(d)], [("m/7.sql", 6)])
+
+    def test_allowed_statements_not_flagged(self):
+        for sql in ["alter table a drop constraint x;", "alter table a alter column b drop not null;",
+                    "alter table a alter column b drop default;", "drop policy if exists p on t;",
+                    "drop function if exists f();", "drop trigger t on a;", "drop index i;",
+                    "alter table a alter column b drop identity;", "alter table a alter b set default 1;",
+                    "alter table a rename constraint x to y;", "alter table type alter column c set not null;"]:
+            with self.subTest(sql=sql):
+                self.assertEqual(cc.scan(diff_for("m/8.sql", [sql])), [])
 
     def test_multiple_files_and_hunks(self):
         d = (diff_for("a.sql", ["drop table a;"]) +
@@ -134,6 +155,18 @@ class ScanCliTest(GitCase):
         self.commit("m")
         self.assertEqual(self.scan()[0], 1)
 
+    def test_renamed_and_edited_file_is_scanned(self):
+        body = "".join("create table t%d (id int);\n" % i for i in range(30))
+        self.write("supabase/migrations/old.sql", body)
+        self.commit("old")
+        self.base = self.git("rev-parse", "HEAD")
+        self.git("mv", "supabase/migrations/old.sql", "supabase/migrations/new.sql")
+        self.write("supabase/migrations/new.sql", body + "drop table x;\n")
+        self.commit("rename")
+        code, out = self.scan()
+        self.assertEqual(code, 1)
+        self.assertIn("supabase/migrations/new.sql:31 is a contract change", out)
+
     def test_paths_scope(self):
         self.write("elsewhere/1.sql", "drop table a;\n")
         self.commit("m")
@@ -180,6 +213,17 @@ class ChangesetCliTest(GitCase):
         self.contract()
         self.changeset("minor", name="other")
         self.commit("m")
+        self.assertEqual(self.check()[0], 1)
+
+    def test_renamed_and_edited_contract_migration_needs_changeset(self):
+        body = "".join("create table t%d (id int);\n" % i for i in range(30))
+        self.write("supabase/migrations/old.sql", body)
+        self.commit("old")
+        self.base = self.git("rev-parse", "HEAD")
+        self.git("mv", "supabase/migrations/old.sql", "supabase/migrations/new.sql")
+        self.write("supabase/migrations/new.sql", body + "-- contract: safe after v1.1.0\ndrop table x;\n")
+        self.changeset("patch")
+        self.commit("rename")
         self.assertEqual(self.check()[0], 1)
 
     def test_no_changeset_fails(self):

@@ -35,6 +35,24 @@ class SyncAppJsonTest(unittest.TestCase):
                 self.assertIn("app.json has no expo.version", out)
                 self.assertEqual((self.dir / "app.json").read_text(), text)
 
+    def test_only_version_value_changes(self):
+        text = ('{\n  "name": "top",\n  "version": "9.9.9",\n  "expo": {\n    "version": "1.3.0",\n'
+                '    "platforms": ["ios", "android"],\n    "extra": {"version": "x", "a": [1, 2]},\n'
+                '    "name": "a"\n  }\n}\n')
+        code, _ = self.run_script(text)
+        self.assertEqual(code, 0)
+        self.assertEqual((self.dir / "app.json").read_text(), text.replace('"1.3.0"', '"1.4.0"'))
+
+    def test_four_space_and_no_trailing_newline_untouched(self):
+        text = '{"expo":{"version":"0.1.0","x":[ 1,2 ]}}'
+        self.run_script(text)
+        self.assertEqual((self.dir / "app.json").read_text(), text.replace("0.1.0", "1.4.0"))
+
+    def test_duplicate_expo_version_fails(self):
+        code, out = self.run_script('{"expo": {"version": "1.0.0", "version": "1.1.0"}}\n')
+        self.assertEqual(code, 1)
+        self.assertIn("ambiguous", out)
+
     def test_non_ascii_kept(self):
         self.run_script('{\n  "expo": {\n    "name": "ü",\n    "version": "0.0.1"\n  }\n}\n')
         self.assertIn("ü", (self.dir / "app.json").read_text())
