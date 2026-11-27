@@ -2,4 +2,4 @@
 ".github": patch
 ---
 
-The release gate now verifies the release-button run behind cd/develop and cd/e2e-develop statuses, so a forged github-actions[bot] status no longer unlocks production.
+The release gate now proves develop deploys from the release-button run jobs (develop-status, e2e-status) instead of commit statuses, so a forged status cannot unlock production.
