@@ -18,6 +18,7 @@ jobs:
     uses: ./.github/workflows/ci.yml
     with:
       preset: shell
+      test_command: python3 -m unittest scripts/test_studio_lock.py scripts/test_release_gate.py
       # Pinned: @latest lets a new release change what blocks every PR.
       lint_command: >-
         go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 &&
@@ -59,3 +60,36 @@ jobs:
       preset: shell
       working_directory: fixtures/shell
       paths_ignore: "**"
+
+  studio-lock:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - id: first
+        uses: ./.github/actions/studio-lock
+        with:
+          mode: acquire
+          slots: "2"
+      - id: second
+        uses: ./.github/actions/studio-lock
+        with:
+          mode: acquire
+          slots: "2"
+      - name: Slots differ
+        env:
+          FIRST: ${{ steps.first.outputs.slot }}
+          SECOND: ${{ steps.second.outputs.slot }}
+        run: |
+          echo "slots: $FIRST $SECOND"
+          [ -n "$FIRST" ] && [ -n "$SECOND" ] && [ "$FIRST" != "$SECOND" ]
+      - uses: ./.github/actions/studio-lock
+        with:
+          mode: release
+          slot: ${{ steps.first.outputs.slot }}
+      - uses: ./.github/actions/studio-lock
+        with:
+          mode: release
+          slot: ${{ steps.second.outputs.slot }}
+      - name: Lock dir is empty
+        run: |
+          [ -z "$(ls -A "$HOME/Library/Caches/cheunjm-studio-lock")" ]
