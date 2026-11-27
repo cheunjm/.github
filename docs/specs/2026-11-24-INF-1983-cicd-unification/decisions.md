@@ -246,7 +246,7 @@ D20–D23 came from the builder check on 2026-11-24.
 - **Impact:** low
 
 ## D26: Develop deploys from rc tags, master only ships rc-tested code
-- **Status:** partly superseded: tags no longer trigger `cd` (D40), and the Version PR merge no longer deploys master (D41). The rc gate stands.
+- **Status:** superseded: tags no longer trigger `cd` (D40), the Version PR merge no longer deploys master (D41), and rc tags and the rc gate are gone (D46).
 - **Supersedes:** D6's "push to `main` deploys develop".
 - **Problem:** Deploying develop on every push to `main` is too heavy (Jace).
 - **Options:** A: a "cut rc" button tags `main`, and master builds from the Version PR tag; B: changesets pre mode, with a Version PR per rc and a release PR for master; C: a nightly scheduled rc.
@@ -264,7 +264,7 @@ D20–D23 came from the builder check on 2026-11-24.
 - **Impact:** high
 
 ## D27: One release flow for every repo, with `next` and `rc` channels
-- **Status:** partly superseded by D41: merging the Version PR no longer deploys master.
+- **Status:** superseded: merging the Version PR no longer deploys master (D41); the `next`/`rc` channels are gone and only ui's npm `next` dist-tag remains (D46).
 - **Supersedes:** D26 point 3; extends D26's button.
 - **Problem:** ui is the published npm package `@cheunjm/ui` and uses changesets pre mode (`next`). Apps pin exact prereleases from it. D26 point 3 would have taken ui off pre mode without a way to publish prereleases. Jace wants every repo on the same flow.
 - **Options:** A: ui keeps pre mode as an exception; B: every repo uses pre mode; C: every repo uses the button, and package repos also publish what it cuts.
@@ -511,6 +511,7 @@ D20–D23 came from the builder check on 2026-11-24.
   | give-and-take | ios | develop | fba291f13646ff474fd72586f5f2614f5f53a731 | 6abf646b13526f37936f512d5dcd7703b17431d7 | 4816ff359986ed15b0c44ca4818d8ff9c0d93ff3 | version FAIL; e2e OK |
 
 ## D45: e2e runs after deploy, against the deployed app
+- **Status:** gate point refined by D46: `cd/e2e-develop` is set on the deployed commit, not an rc commit.
 - **Supersedes:** D33's trigger (the Version PR) and its enforcement, and D39.6's local e2e port blocks.
 - **Problem:** Jace wants e2e only after deploys, as part of the checklist, on both buttons.
 - **Options:** A: test the deployed app; develop runs every flow, production runs `smoke` flows with a dedicated account; B: every flow in both; C: the local-stack suite, run after the deploy.
@@ -521,5 +522,22 @@ D20–D23 came from the builder check on 2026-11-24.
   - **Retired:** the Version PR e2e trigger and the local Supabase e2e stacks.
 - **Rationale:** it tests what users actually run, and production stays clean.
 - **Proposed by:** human (after deploy, both buttons), ai (test builds, smoke tag, gate)
+- **Chosen by:** human
+- **Impact:** high
+
+## D46: No prerelease tags; production ships what develop last deployed
+- **Supersedes:** D26's rc tags and rc gate, D27's `next`/`rc` channels and "only an rc ships", D45's "status on the rc commit", and stage-4 ruling R6 (latest prerelease by GitHub release date).
+- **Problem:** with the button deploying in the same run (D40) and production behind its own button (D41), rc tags only label a develop deploy. Jace asked to remove them.
+- **Options:** A: no prerelease tags; the deployed commit itself carries the proof; B: keep tags with one `next` channel; C: only delete the existing rc tags.
+- **Choice:** A.
+  - **Release button:** deploys develop from the `main` HEAD it runs on, after the same checks (default branch, `ci / gate` green, not in pre mode). It creates no tag and no GitHub prerelease. `X.Y.Z` is computed as before and used for the develop build version and the OTA message (`X.Y.Z+<sha7>`).
+  - **Proof on the commit:** after a successful develop deploy, `cd` sets status `cd/develop` = `success` on the deployed commit, and after green develop e2e, `cd/e2e-develop`. Both are posted with the job token, so they come from `github-actions[bot]`.
+  - **Production gate:** for the release commit (the `vX.Y.Z` tag from the Version PR merge): on `main`; `ci / gate` green; the newest commit in its first-parent history (itself included, at most 100 back) with a `cd/develop` success from `github-actions[bot]` is the tested commit; the release's code matches it except `CHANGELOG.md`, `.changeset/` and the version fields (as parsed JSON, R7); with e2e, the tested commit also has `cd/e2e-develop`. Failures end in `press the release button first`.
+  - **ui's npm prereleases:** the button with `publish: true` still publishes `X.Y.Z-next.N` under the `next` dist-tag; `N` is the highest `X.Y.Z-next.*` already on the registry plus one. No git tag.
+  - **Kept:** the `vX.Y.Z` tag and GitHub release on Version PR merge, and the file name `release-candidate.yml` (callers reference it; renamed in v2). Its `channel` input is accepted and ignored except for ui's dist-tag; output `tag` is empty, and a new output `ref` is the deployed SHA.
+  - **Existing tags:** the `vX.Y.Z-rc.N`/`-next.N` tags already cut stay as history; nothing reads them.
+- **Rationale:** one fewer artifact per release, no tag counter races, and the gate checks what actually ran on develop rather than a label pointing at it.
+- **Calls made by the AI while recording this:** the status names, the 100-commit search bound, the npm-registry counter for ui, and keeping the workflow file name until v2.
+- **Proposed by:** human (no rc), ai (statuses on the commit, gate walk)
 - **Chosen by:** human
 - **Impact:** high
