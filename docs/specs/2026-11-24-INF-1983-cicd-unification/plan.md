@@ -577,3 +577,172 @@ Runs after arami (Task 11) and starlog (Task 12) have moved to `@v1`, so `@main`
 - Every repo's latest PR shows `ci / gate`, and its ruleset blocks a red gate.
 - Every repo has an openwiki caller that has run once on `mac-studio-openwiki`.
 
+
+---
+
+# Stage 4 implementation: CD
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task by task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** every app repo deploys through one `cd.yml@v1` caller, only from the release button (develop) and clean `vX.Y.Z` tags (master), with backend first and OTA instead of a build whenever the native fingerprint already has one.
+
+**Architecture:**
+- **`.github`, two releases.** v1.3.0: the `studio-lock` and `release-gate` actions, and the lock in `e2e-maestro` (Tasks 1–2). v1.4.0: `cd.yml` with its Expo fixture and dry-run self-test (Tasks 3–5). The internal blocks are jobs inside `cd.yml`, not separate reusable files; logic that needs tests lives in composite actions that ship one release earlier, because a reusable workflow can't read its own repo's scripts (D39.1).
+- **Repos, one PR each, in order:** starlog (Task 6), arami (Task 7), ui (Task 8), give-and-take (Task 9). Each needs v1.4.0.
+- **Last:** openwiki drops `[skip ci]` (Task 10).
+
+**Tech stack:** GitHub Actions YAML, bash, Python 3 stdlib (lock and gate scripts), `eas-cli` 27.11.0, Supabase CLI 3.2.0, `vercel@65`, Doppler CLI, `gh`, `actionlint`.
+
+## Global constraints
+
+- **Order:** Supabase, then web (then Storybook), then EAS. A failed Supabase job skips web and EAS; a Storybook failure does not block EAS (D7, D24).
+- **Environment:** a tag with `-` in its name deploys `develop`; a clean `vX.Y.Z` deploys `master`; `workflow_dispatch` takes `environment` explicitly; any other trigger deploys nothing (D26, D38).
+- **Master gate:** the commit is on `main`, `ci / gate` passed on it, the latest prerelease of `X.Y.Z` is an `rc`, and the code matches that rc except version fields, `CHANGELOG.md` and `.changeset/`. Failure text: `cut a new rc first` (D22.2, D26, D27).
+- **EAS (D8):** per platform, `eas fingerprint:generate -p <p> -e <profile> --json`; a finished build with that hash (`eas build:list --fingerprint-hash`) means OTA only; otherwise `eas build --local`, `eas upload --fingerprint <hash>`, then the OTA. Builds run on `mac-studio` (D9) inside the Studio lock (D37).
+- **Names:** caller job id `cd`, so checks read `cd / plan`, `cd / supabase`, `cd / web`, `cd / storybook`, `cd / eas`, `cd / notify`.
+- **Secrets:** per-environment values (`DOPPLER_TOKEN`, `VERCEL_PROJECT_ID`, `SUPABASE_*`, `PLAY_SERVICE_ACCOUNT_JSON`, `FIREBASE_*`) live in the GitHub Environments `develop` and `master`; IDs are variables, tokens are secrets (D14, D22.4). Values go through `scripts/sync-secrets.py` only.
+- **Pins:** `eas-cli` 27.11.0, Supabase CLI 3.2.0, `vercel@65`; third-party actions by SHA. No `permissions:` inside reusable workflows; inputs reach `run:` only through `env:`.
+- **Branches and commits:** `feat/INF-1983-<slug>`, `feat(workflows): [INF-1983] …` in `.github`, `ci(cd): [INF-1983] …` in the app repos. `.github`: `minor` changesets; app repos: empty changesets.
+
+## Review focus
+
+1. **A push to `main` deploys something:** `cd / plan` must output `environment=''` for any non-tag, non-dispatch event, and every target job must skip on it. Task 5's self-test covers a push event.
+2. **A stale lock blocks the Studio forever:** a runner that dies mid-build leaves its slot. `acquire` must treat a slot whose owner process is gone as free. Task 1 tests this.
+3. **An OTA to a build that doesn't exist yet:** per platform, the OTA publishes only after that platform's build (if any) is uploaded; a failing platform must not stop the other. Today's uploads carry no fingerprint, so each repo's first real develop deploy (Tasks 6–7) must show build, upload, then OTA.
+4. **Version-only diffs misread as code:** `package.json`/`package-lock.json` differing only in `"version"` lines must pass the master gate; any other line in them must fail it. Task 1's gate tests cover both.
+5. **Prerelease numbers that already exist on npm:** ui published `1.0.0-next.0`…`next.7` from pre mode under package-scoped tags, so the button would start at `next.0` again. Task 8 seeds `v1.0.0-next.7` first.
+6. **Secret kind drift:** starlog reads `VERCEL_ORG_ID`/`VERCEL_PROJECT_ID` as secrets today, while the manifest makes them variables. `cd` reads `vars.` only, and Task 6 syncs before switching.
+
+---
+
+### Task 1: `studio-lock` and `release-gate` actions
+
+**Files:**
+- Create: `.github/actions/studio-lock/action.yml` (composite), `.github/actions/studio-lock/lock.py`, `scripts/test_studio_lock.py`
+- Modify: `.github/workflows/self.yml` (a `studio-lock` job), `CLAUDE.md` (one line under the workflow table)
+
+**Interfaces (produces):**
+- `lock.py acquire --dir <d> --slots 2 --timeout-minutes <n> --owner <json>` prints `slot=<i>`; exit 1 with `no Studio slot in <n> min` on timeout.
+- `lock.py release --dir <d> --slot <i> --owner-id <run_id>-<job>` removes the slot only if it holds that owner id.
+- A slot is the directory `<d>/slot-<i>` created with `os.mkdir` (atomic), holding `owner.json` `{id, pid, repo, run_url, acquired_at}`. `pid` is the job's `Runner.Worker` process (nearest ancestor with that name). A slot whose `pid` is not alive is free.
+- Action inputs: `mode` (`acquire` | `release`), `slots` (default `2`), `timeout-minutes` (default `120`), `slot` (release only). Output `slot`. Lock dir: `~/Library/Caches/cheunjm-studio-lock`.
+
+- [ ] **Step 1:** write `scripts/test_studio_lock.py` (unittest, temp dirs): `test_two_owners_get_different_slots`, `test_third_owner_times_out` (timeout 0 → exit 1 and the message), `test_dead_owner_slot_is_reused` (owner pid 999999 → acquired), `test_release_ignores_foreign_owner`, `test_release_frees_slot`.
+- [ ] **Step 2:** `python3 -m unittest scripts/test_studio_lock.py`. Expected: fails (no `lock.py`).
+- [ ] **Step 3:** implement `lock.py` (poll every 15 s) and `action.yml` (runs `python3 "$GITHUB_ACTION_PATH/lock.py"`, writes `slot` to `GITHUB_OUTPUT`, prints the holder of each busy slot while waiting).
+- [ ] **Step 4:** tests pass. Add `self.yml` job `studio-lock` (ubuntu): acquire twice with `slots: 2`, release both, all via `uses: ./.github/actions/studio-lock`. Add the unittest run to the `ci` job's `test_command`.
+- [ ] **Step 5:** `release-gate` action, same pattern. Files: `.github/actions/release-gate/{action.yml,gate.py}`, `scripts/test_release_gate.py`. `gate.py --sha <sha> --tag <tag|''> --version <X.Y.Z>` (needs `GH_TOKEN`, run inside a full-history checkout) fails with the messages in Global constraints, in this order: not on `main` (`git merge-base --is-ancestor`); `ci / gate` not `success` on the SHA (`check-runs?check_name=ci%20/%20gate`); the highest-`N` prerelease tag of `X.Y.Z` across channels is not `-rc.` (`latest prerelease of X.Y.Z is not an rc: cut a new rc first`); `git diff --name-only <rc> <sha>` minus `CHANGELOG.md` and `.changeset/*` leaves anything but `package.json`/`package-lock.json`, or their `git diff -U0` changed lines aren't all `"version": ` lines (`code differs from <rc>: cut a new rc first`). Tests on a temp git repo: `test_version_only_diff_passes`, `test_dependency_change_fails`, `test_next_latest_fails`, `test_no_prerelease_fails`, `test_changelog_and_changeset_ignored`; the git-hub API call is injected as a function so tests don't need the network.
+- [ ] **Step 6:** `minor` changeset, commit, draft PR; checks green, then ready and merge with Task 2.
+
+### Task 2: lock `e2e-maestro` builds and suites, release v1.3.0
+
+**Files:** modify `.github/workflows/e2e-maestro.yml` (android and ios jobs), `CLAUDE.md` (e2e row).
+
+- [ ] **Step 1:** in both native jobs, when `runner.os == 'macOS'`: a `studio-lock` acquire step (`uses: cheunjm/.github/.github/actions/studio-lock@v1`) right before `Build`, and a release step `if: always() && steps.lock.outputs.slot != ''` after the suite. Input `studio-lock` (boolean, default true) turns it off.
+- [ ] **Step 2:** stack Task 1 and 2 as one PR (the `@v1` reference resolves once v1.3.0 ships; Task 1's self-test covers the action itself). Merge, merge the Version PR, confirm `v1` moved.
+- [ ] **Step 3:** prove it: dispatch arami `e2e.yml` while a starlog `eas-build` (or a second arami e2e) runs. Expected: logs show `slot=0`/`slot=1`, a third heavy job waits with the holder named, and `ls ~/Library/Caches/cheunjm-studio-lock` is empty afterwards.
+
+### Task 3: `cd.yml` plan, Supabase, web, Storybook and EAS jobs
+
+**Files:** create `.github/workflows/cd.yml`.
+
+**Interfaces (produces), inputs:**
+
+| Input | Default | Use |
+|---|---|---|
+| `environment` | `''` | dispatch only: `develop` \| `master` |
+| `dry_run` | `false` | resolve and print; deploy nothing |
+| `supabase` | `false` | `supabase link --project-ref $SUPABASE_PROJECT_REF`, `db push --yes`, `functions deploy --use-api --yes`; dry run: `supabase migration list --linked`, fail if a remote-only migration exists (D23) |
+| `web` | `false` | `doppler run -- <web_build_command>`, then `<web_postbuild_command>`, then `npx --yes vercel@65 deploy <web_output_dir> --prod --yes` |
+| `web_build_command` | `npx expo export --platform web` | |
+| `web_postbuild_command` | `''` | arami: `scripts/web-postbuild.sh` |
+| `web_output_dir` | `dist` | |
+| `storybook` | `false` | after web: `<storybook_build_command>` and `vercel deploy storybook-static --prod` with `vars.STORYBOOK_VERCEL_PROJECT_ID` |
+| `storybook_build_command` | `npm run storybook:build` | |
+| `eas` | `false` | the EAS job |
+| `platforms` | `android,ios` | |
+| `sideload_apk` | `false` | master builds also build profile `master-apk` |
+| `submit` | `false` | master builds run `eas submit` (Android needs `PLAY_SERVICE_ACCOUNT_JSON`) |
+| `firebase_groups` | `''` | when set, `firebase-tools@15.8.0 appdistribution:distribute` per built artifact (starlog) |
+| `eas_runner` | `mac-studio` | |
+| `node_version` | `20` | |
+| `install_command` | `npm ci` | |
+| `slack_channel` | `''` | Task 4 |
+
+Secrets: `EXPO_TOKEN`, `DOPPLER_TOKEN`, `VERCEL_TOKEN`, `SUPABASE_ACCESS_TOKEN`, `SUPABASE_DB_PASSWORD`, `SUPABASE_PROJECT_REF`, `PLAY_SERVICE_ACCOUNT_JSON`, `FIREBASE_SERVICE_ACCOUNT`, `SLACK_BOT_TOKEN` (all optional). Outputs: `environment`, `tag`.
+
+Jobs (each target job `needs: plan`, `environment: ${{ needs.plan.outputs.environment }}`, `if: needs.plan.outputs.environment != ''`):
+- **`plan`** (ubuntu): resolves `environment`, `tag`, `version` (Global constraints); for `master`, the gate of Task 4. Prints a table of targets.
+- **`supabase`**, **`web`**, **`storybook`** (ubuntu): as in the table; web `needs: [plan, supabase]` with `if: !failure() && !cancelled()`.
+- **`eas`** (`eas_runner`, timeout 120): `needs: [plan, supabase, web]`. Per platform in `platforms`: profile = environment; fingerprint; build-or-skip (inside one `studio-lock` acquire/release pair for the whole build phase); then `doppler run -- eas update --channel <env> --environment <preview|production> --platform <p> --message <tag> --non-interactive`. EAS env: before the build or update, sync Doppler `EXPO_PUBLIC_*` into the EAS environment (`preview` for develop, `production` for master), porting `scripts/sync-doppler-to-eas.sh` into a step. A failing platform fails the job after the other platform finishes (loop collects failures).
+- With `dry_run`, every job prints its commands and the fingerprint lookup result and runs nothing that writes.
+
+- [ ] **Step 1:** write the file; `actionlint` clean.
+- [ ] **Step 2:** commit on `feat/INF-1983-cd` (stack bottom).
+
+### Task 4: master gate and Slack
+
+**Files:** modify `.github/workflows/cd.yml` (`plan` gate step, `notify` job).
+
+- [ ] **Step 1 (gate):** in `plan`, when the environment is `master`, check out with `fetch-depth: 0` and run `cheunjm/.github/.github/actions/release-gate@v1` with the SHA, the tag (empty on dispatch) and the version (the tag's `X.Y.Z`, or `package.json`'s on dispatch).
+- [ ] **Step 2 (`notify`, ubuntu, `if: always() && inputs.slack_channel != ''`):** one `chat.postMessage` (same curl/jq pattern as `notify-merge.yml`) with repo, environment, tag, each target's result (`needs.<job>.result`) and the run URL.
+- [ ] **Step 3:** `actionlint`; commit.
+
+### Task 5: Expo fixture, dry-run self-test, release v1.4.0
+
+**Files:** create `fixtures/expo/{package.json,app.json,eas.json}`; modify `self.yml`, `CLAUDE.md` (`cd.yml` row), changeset `minor`.
+
+- [ ] **Step 1:** `self.yml` jobs calling `./.github/workflows/cd.yml` with `dry_run: true`, all targets on, `eas_runner: ubuntu-latest`, against `fixtures/expo`:
+  - `cd-develop`: `environment: develop`. Expected `plan` output `environment=develop` and every target prints its commands.
+  - `cd-push`: no environment on a `pull_request` event. Expected `environment=''` and every target job skipped (Review focus 1).
+  - `cd-master-gate`: `environment: master` against `.github` itself, which has no rc tags. Expected: `plan` fails with `latest prerelease of X.Y.Z is not an rc: cut a new rc first`; the job is `continue-on-error` and a follow-up step asserts the failure, like `red`.
+- [ ] **Step 2:** push; all self-test gates green. Merge, merge the Version PR, confirm `v1` → v1.4.0.
+
+### Task 6: starlog on `cd`, and its e2e on the Studio
+
+**Files (starlog):** create `.github/workflows/cd.yml` (caller), `scripts/e2e/{env.sh,backend.sh,build.sh,test.sh}` (from arami's, with `E2E_APP_ID` and ports 5932x iOS / 5942x Android); delete `deploy-web.yml`, `eas-build.yml`, `eas-update.yml`, `deploy-supabase.yml`, `.github/actions/verify-release/`, `scripts/sync-doppler-to-eas.sh`; modify `e2e.yml` (call `e2e-maestro@v1`, `platforms: android,ios`), `docs/deployment.md`, `CLAUDE.md`, `.github` `secrets.manifest.toml` (add `FIREBASE_SERVICE_ACCOUNT` secret and `FIREBASE_APP_ID`/`FIREBASE_APP_ID_IOS` variables for both environments).
+
+Caller: `on: push: tags: ['v*']` and `workflow_dispatch` (`environment`, `dry_run`); `with: supabase: true, web: true, eas: true, platforms: android, firebase_groups: testers, sideload_apk: true, slack_channel: C0AJD47H6R4`; `secrets: inherit`.
+
+- [ ] **Step 1:** `.github` PR: manifest entries; `python3 scripts/sync-secrets.py --repo starlog --dry-run`, then a real run (Jace runs it if denied). Expected: `VERCEL_ORG_ID` and `VERCEL_PROJECT_ID` now exist as variables.
+- [ ] **Step 2:** starlog PR with the caller and deletions; `workflow_dispatch` the PR branch with `dry_run: true, environment: develop`. Expected: plan `develop`, Supabase lists migrations with no remote-only entry, fingerprint lookup printed.
+- [ ] **Step 3:** e2e: dispatch `e2e.yml` on the branch. Expected: both platforms on `mac-studio-starlog-{android,ios}` holding Studio slots.
+- [ ] **Step 4:** merge; then the spec's CD verification list (`plan.md` Verification) for starlog: push to `main` deploys nothing; button `rc` → Supabase, web, OTA (and a build only when the fingerprint is new), Slack message; button refusal on a red gate; after the next Version PR, master deploy passes; a merge after the last rc makes it fail with `cut a new rc first`.
+
+### Task 7: arami on `cd`
+
+**Files (arami):** create `cd.yml` caller; delete `deploy-web.yml`, `eas-build.yml`, `eas-update.yml`, `.github/actions/verify-release/`, `scripts/sync-doppler-to-eas.sh`; modify `docs/deployment.md`; `.github` manifest: `SUPABASE_ACCESS_TOKEN`, `SUPABASE_DB_PASSWORD`, `SUPABASE_PROJECT_REF` for arami (both environments, from new 1Password items Jace creates).
+
+Caller: `supabase: false` at first, `web: true, web_postbuild_command: scripts/web-postbuild.sh, eas: true, platforms: android, sideload_apk: true, slack_channel: C0AJD47H6R4`.
+
+- [ ] **Step 1:** the caller passes `supabase: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}`, so the Supabase target only ever runs in dry runs. Merge, then dispatch `dry_run: true` for both environments. Expected for D23: `migration list --linked` shows no remote-only migration in either. If drift shows, open an issue and leave the caller as is.
+- [ ] **Step 2:** a follow-up PR sets `supabase: true`; then the CD verification list as in Task 6.
+
+### Task 8: ui on `cd` (Storybook only) and the button with publish
+
+ui has no EAS project or app web deploy, so its `cd` turns on `storybook` only (D39.3).
+
+**Files (ui):** create `cd.yml` caller (`storybook: true`, `slack_channel: C0AJD47H6R4`); modify `release.yml` (add a `cut` job on `workflow_dispatch` with `channel`, calling `release-candidate.yml@v1` with `publish: true, trusted_publishing: true`, so npm's trusted publisher stays `release.yml`); delete `prerelease.yml` and `.changeset/pre.json` (leave pre mode, D27); update the INF-1982 plan's versioning line; `CLAUDE.md` (drop `stage` and `ci / contrast`). Create GitHub Environments `develop` and `master` with `STORYBOOK_VERCEL_PROJECT_ID` for new Vercel projects `ui-storybook-develop`/`ui-storybook-master` (Jace creates projects and environments if denied); delete the leftover `Preview*`/`Production*` environments and the unused repo secrets `CHROMATIC_PROJECT_TOKEN`, `DOPPLER_TOKEN_*`, `VERCEL_PROJECT_ID*`.
+
+- [ ] **Step 1:** environments and secrets (manifest PR in `.github`, then sync).
+- [ ] **Step 2:** seed the counter: push tag `v1.0.0-next.7` (bot token) at the commit that published `1.0.0-next.7` (`git rev-list -n1 @jaemincheun/ui@1.0.0-next.7`), so the button's next `N` is 8. Check `npm view @jaemincheun/ui versions` has no `1.0.0-next.8`.
+- [ ] **Step 3:** ui PR; after merge, button `next`. Expected: `@jaemincheun/ui@1.0.0-next.8` on the `next` dist-tag and Storybook live at the develop project URL.
+- [ ] **Step 4:** a master deploy dispatched while the latest prerelease is a `next` fails with `cut a new rc first`. The Version PR (`1.0.0`) stays unmerged until INF-1982 says ship (D27.2).
+
+### Task 9: give-and-take, first CD and e2e
+
+Prerequisite check (Jace): hosted Supabase projects for develop and master, Doppler `give-and-take` configs `develop`/`master`, Vercel projects `give-and-take-develop`/`give-and-take`. Missing pieces are created first; the task does not invent them.
+
+**Files (give-and-take):** `release.yml` (`@v1`, `tag: true`), `release-candidate.yml` caller, `cd.yml` caller (`supabase: true, web: true, eas: true, platforms: android, slack_channel: C0AJD47H6R4`), `e2e.yml` caller (`platforms: android,ios`), `scripts/e2e/*` (ports 6032x iOS / 6042x Android), `.maestro/flows/smoke.yaml`, `docs/release.md`. Studio runner `mac-studio-giveandtake` (label `mac-studio`). Manifest entries for every secret above in both environments; GitHub Environments `develop`/`master`.
+
+- [ ] **Step 1:** runner, environments, manifest and sync.
+- [ ] **Step 2:** e2e smoke suite: launch, sign-in screen shows its Apple and Google buttons. Sign-in flows need a test-only auth path and are left to a follow-up issue (D39.4). Dispatch `e2e.yml`; both platforms green.
+- [ ] **Step 3:** `cd` dry run both environments, then the CD verification list.
+
+### Task 10: openwiki merges report `ci / gate`
+
+Once Tasks 6–9 merged (no repo deploys on push to `main`): `openwiki-update.yml` drops `[skip ci]` from its squash subject (`patch` changeset, release). Check: the next wiki merge on `main` in arami shows `ci / gate`, so the button works right after a wiki merge.
+
+### Stage 4 done
+
+The stage goal's done criteria (`plan.md` stage 4) hold for starlog, arami, ui and give-and-take, and no app repo has `deploy-web`, `eas-build`, `eas-update`, `deploy-supabase` or `verify-release` left.

@@ -419,3 +419,17 @@ D20–D23 came from the builder check on 2026-11-24.
 - **Proposed by:** human
 - **Chosen by:** human
 - **Impact:** med
+
+## D39: Stage 4 details settled by the AI
+- **Problem:** writing the stage 4 tasks found gaps the spec did not settle.
+- **Choice:**
+  1. `cd`'s internal blocks are jobs in one `cd.yml`, not separate reusable files: a reusable workflow can't call a sibling by relative path, and pinning siblings to `@v1` would test the old code on a PR branch. Logic that needs unit tests (the Studio lock, the master release gate) lives in composite actions that ship one release before `cd` uses them.
+  2. Web uses arami's model for every repo: `doppler run -- <build>`, an optional post-build command, then `vercel@65 deploy <dir> --prod` with `VERCEL_ORG_ID` and `VERCEL_PROJECT_ID` as variables. starlog leaves `vercel build`. EAS builds and updates run under `doppler run` after Doppler's `EXPO_PUBLIC_*` values are synced to the EAS environment, and `eas-cli` is pinned (27.11.0). starlog's Firebase App Distribution is kept as the `firebase_groups` input.
+  3. ui has no EAS project or app web deploy, so its `cd` turns on Storybook only. It publishes prereleases from the button inside `release.yml` (npm's trusted publisher), and a `v1.0.0-next.7` seed tag keeps the button from reusing versions pre mode already published.
+  4. give-and-take signs in only with Apple and Google, so its first Maestro suite is a smoke test (launch, sign-in buttons). Signed-in flows need a test-only auth path and are a follow-up issue.
+  5. arami's caller runs the Supabase target only in dry runs until D23's history check is clean.
+  6. e2e Supabase port blocks on the Studio: arami 583xx/584xx, starlog 593xx/594xx, give-and-take 603xx/604xx (iOS/Android), all outside the dev stacks' 54xxx–57xxx.
+- **Rationale:** each follows from D7, D8, D9, D22–D24, D27, D36 or D37, or keeps current behavior.
+- **Proposed by:** ai
+- **Chosen by:** ai
+- **Impact:** med
