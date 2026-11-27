@@ -28,7 +28,8 @@ name: CD
 #   storybook       <storybook_build_command>, vercel deploy storybook-static.
 #   e2e             e2e-maestro.yml on the test builds; master runs only flows tagged smoke.
 #   develop-status  commit status cd/develop on the deployed commit; e2e-status sets
-#   e2e-status      cd/e2e-develop. The production gate trusts only these (D46).
+#   e2e-status      cd/e2e-develop. The production gate reads these two jobs, not the statuses (D46).
+#                   Both are skipped in dry runs, so a dry run never counts as a deploy.
 #   notify          one Slack post when slack_channel is set, whatever the results.
 #
 # A failed backend skips app, web and e2e. storybook waits for web but runs whatever web's
@@ -47,7 +48,8 @@ name: CD
 #            FIREBASE_APP_ID_ANDROID (or FIREBASE_APP_ID), FIREBASE_APP_ID_IOS,
 #            APPLE_TEAM_ID, APPLE_TEAM_TYPE (optional, for EAS-managed iOS signing)
 #
-# No `permissions:` here; callers grant contents: read, statuses: write, checks: read.
+# No `permissions:` here; callers grant contents: read, statuses: write, checks: read (and
+# actions: read on the production button, where the master gate reads the develop runs' jobs).
 #
 #   jobs:
 #     cut:
@@ -864,7 +866,7 @@ jobs:
     name: develop-status
     needs: [plan, backend, app, web]
     if: >-
-      always() && needs.plan.result == 'success' && needs.plan.outputs.environment == 'develop' &&
+      always() && !inputs.dry_run && needs.plan.result == 'success' && needs.plan.outputs.environment == 'develop' &&
       (inputs.backend || inputs.app || inputs.web) &&
       (!inputs.backend || needs.backend.result == 'success') &&
       (!inputs.app || needs.app.result == 'success') &&
@@ -891,7 +893,7 @@ jobs:
   e2e-status:
     name: e2e-status
     needs: [plan, e2e]
-    if: always() && needs.e2e.result == 'success' && needs.plan.outputs.environment == 'develop'
+    if: always() && !inputs.dry_run && needs.e2e.result == 'success' && needs.plan.outputs.environment == 'develop'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

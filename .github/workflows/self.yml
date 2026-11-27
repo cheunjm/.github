@@ -260,6 +260,7 @@ jobs:
       contents: read
       statuses: write
       checks: read
+      actions: read
     uses: ./.github/workflows/cd.yml
     with:
       environment: master
@@ -318,4 +319,8 @@ jobs:
           grep -qF "if: inputs.expect_failure != '' && !inputs.dry_run" "$f" || { echo "::error::the real-run refusal step is missing"; exit 1; }
           grep -qF "expect_failure is for dry runs" "$f" || { echo "::error::the refusal message is missing"; exit 1; }
           grep -qF "if: inputs.expect_failure != '' && inputs.dry_run" "$f" || { echo "::error::Expected failure step is not dry_run-gated"; exit 1; }
+          for job in develop-status e2e-status; do
+            line="$(awk -v j="  $job:" '$0 == j {f=1} f && /^    runs-on:/ {exit} f && /^    if:/ {g=1} f && g {print}' "$f")"
+            case "$line" in *'!inputs.dry_run'*) ;; *) echo "::error::$job is not skipped in dry runs"; exit 1 ;; esac
+          done
           echo "expect_failure is inert outside dry runs"
