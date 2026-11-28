@@ -1,5 +1,11 @@
 # .github
 
+## 1.5.1
+
+### Patch Changes
+
+- [#173](https://github.com/cheunjm/.github/pull/173) [`0805eb6`](https://github.com/cheunjm/.github/commit/0805eb6c176e02f0263fdab3c1b70eac32408c55) Thanks [@cheunjm](https://github.com/cheunjm)! - changeset-version.yml drops pending changesets when every one is empty (e.g. the OpenWiki bot's openwiki-docs.md), so the release run publishes instead of stopping at "All changesets are empty".
+
 ## 1.5.0
 
 ### Minor Changes
