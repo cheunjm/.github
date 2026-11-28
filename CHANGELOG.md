@@ -1,5 +1,13 @@
 # .github
 
+## 1.5.2
+
+### Patch Changes
+
+- [#178](https://github.com/cheunjm/.github/pull/178) [`886d0e6`](https://github.com/cheunjm/.github/commit/886d0e621f3b0b57083788ae3eaab5c4c86ae61a) Thanks [@cheunjm](https://github.com/cheunjm)! - Reuse the Android APK built by this run as the e2e build instead of building e2e-<env> again.
+
+- [#175](https://github.com/cheunjm/.github/pull/175) [`50b53e4`](https://github.com/cheunjm/.github/commit/50b53e49e3911c250d343ae3a3ec1d7ccc08cff0) Thanks [@cheunjm](https://github.com/cheunjm)! - Pass the Maestro test account and installed app id to flows as MAESTRO_E2E_EMAIL, MAESTRO_E2E_PASSWORD and MAESTRO_APP_ID.
+
 ## 1.5.1
 
 ### Patch Changes
