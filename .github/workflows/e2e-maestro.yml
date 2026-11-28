@@ -290,7 +290,12 @@ jobs:
           password=$(printf '%s\n' "$creds" | sed -n 2p)
           echo "::add-mask::$email"
           echo "::add-mask::$password"
-          { echo "E2E_EMAIL=$email"; echo "E2E_PASSWORD=$password"; } >> "$GITHUB_ENV"
+          {
+            echo "E2E_EMAIL=$email"
+            echo "E2E_PASSWORD=$password"
+            echo "MAESTRO_E2E_EMAIL=$email"
+            echo "MAESTRO_E2E_PASSWORD=$password"
+          } >> "$GITHUB_ENV"
 
       - name: Set up
         if: inputs.setup-command != '' && inputs.app-artifact == ''
@@ -326,6 +331,25 @@ jobs:
           fi
           apk=$(find "$APP_DIR" -type f -name '*.apk')
           echo "E2E_APK=$apk" >> "$GITHUB_ENV"
+
+      # Flows read the installed build's id as appId: ${MAESTRO_APP_ID}.
+      - name: Read app id
+        if: inputs.app-artifact != ''
+        run: |
+          tool="${ANDROID_HOME:-}/cmdline-tools/latest/bin/apkanalyzer"
+          if [ ! -x "$tool" ]; then
+            tool=$(command -v apkanalyzer || true)
+          fi
+          app_id=""
+          if [ -n "$tool" ]; then
+            app_id=$("$tool" manifest application-id "$E2E_APK" || true)
+          fi
+          if [ -z "$app_id" ]; then
+            echo "::error::cannot read the application id of $E2E_APK"
+            exit 1
+          fi
+          echo "App id: $app_id"
+          { echo "MAESTRO_APP_ID=$app_id"; echo "E2E_APP_ID=$app_id"; } >> "$GITHUB_ENV"
 
       - name: Install Maestro
         env:
@@ -675,7 +699,12 @@ jobs:
           password=$(printf '%s\n' "$creds" | sed -n 2p)
           echo "::add-mask::$email"
           echo "::add-mask::$password"
-          { echo "E2E_EMAIL=$email"; echo "E2E_PASSWORD=$password"; } >> "$GITHUB_ENV"
+          {
+            echo "E2E_EMAIL=$email"
+            echo "E2E_PASSWORD=$password"
+            echo "MAESTRO_E2E_EMAIL=$email"
+            echo "MAESTRO_E2E_PASSWORD=$password"
+          } >> "$GITHUB_ENV"
 
       - name: Set up
         if: inputs.setup-command != '' && inputs.app-artifact == ''
@@ -721,6 +750,18 @@ jobs:
           fi
           app=$(find "$extract" -maxdepth 2 -type d -name '*.app')
           echo "E2E_APP=$app" >> "$GITHUB_ENV"
+
+      # Flows read the installed build's id as appId: ${MAESTRO_APP_ID}.
+      - name: Read app id
+        if: inputs.app-artifact != ''
+        run: |
+          app_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$E2E_APP/Info.plist" || true)
+          if [ -z "$app_id" ]; then
+            echo "::error::cannot read the application id of $E2E_APP"
+            exit 1
+          fi
+          echo "App id: $app_id"
+          { echo "MAESTRO_APP_ID=$app_id"; echo "E2E_APP_ID=$app_id"; } >> "$GITHUB_ENV"
 
       - name: Install Maestro
         env:
