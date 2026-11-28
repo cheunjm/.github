@@ -1,5 +1,11 @@
 # .github
 
+## 1.5.3
+
+### Patch Changes
+
+- [#179](https://github.com/cheunjm/.github/pull/179) [`0793304`](https://github.com/cheunjm/.github/commit/0793304e666d6eea97638ead2a2cc41856ac1798) Thanks [@cheunjm](https://github.com/cheunjm)! - OpenWiki merges no longer carry `[skip ci]`, so `ci / gate` runs on the merge and the release button works right after a wiki merge.
+
 ## 1.5.2
 
 ### Patch Changes
