@@ -179,6 +179,29 @@ jobs:
           npm install --no-save --no-package-lock --no-audit --no-fund \
             "@changesets/cli@$CLI_VERSION" "@changesets/changelog-github@$CHANGELOG_VERSION"
 
+      - name: Drop empty-only changesets
+        # An empty changeset (frontmatter with no packages, e.g. openwiki-update.yml's
+        # .changeset/openwiki-docs.md) still counts as pending for changesets/action, so
+        # it takes the version path, finds nothing to version ("All changesets are
+        # empty. Not creating PR") and never runs the publish script. When every
+        # pending changeset is empty, remove them from the working tree (not committed)
+        # so the action takes the publish path. Any real changeset leaves all in place.
+        shell: bash
+        run: |
+          shopt -s nullglob
+          real=0
+          empty=()
+          for f in .changeset/*.md; do
+            [ "$(basename "$f")" = "README.md" ] && continue
+            # Lines between the first two `---` fences, ignoring blank lines.
+            packages="$(awk 'NR==1 && /^---[[:space:]]*$/ {fm=1; next} fm && /^---[[:space:]]*$/ {exit} fm' "$f" | grep -v '^[[:space:]]*$' || true)"
+            if [ -n "$packages" ]; then real=1; else empty+=("$f"); fi
+          done
+          if [ "$real" = 0 ] && [ "${#empty[@]}" -gt 0 ]; then
+            rm -f -- "${empty[@]}"
+            echo "Only empty changesets were pending; dropped: ${empty[*]}"
+          fi
+
       - name: Version PR / publish
         # Pinned to a commit: this third-party action receives the arami-bot token.
         uses: changesets/action@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
