@@ -21,7 +21,8 @@ Per platform, in this order:
      <env>-apk; then distribute: Firebase App Distribution (--firebase-groups) and, on
      master, `eas submit` (--store-submit);
   4. with --e2e: the test build for this fingerprint (profile e2e-<env>: an Android APK or
-     an iOS simulator build) is downloaded when EAS has one, else built and uploaded. It
+     an iOS simulator build) is downloaded when EAS has one, else built and uploaded; an
+     Android APK this run's release part built (<env>, else <env>-apk) is copied instead. It
      lands in <out>/<p>/e2e/ for the workflow to upload as artifact e2e-app-<p>.
 A failing platform fails the run only after the other platform finished.
 
@@ -234,6 +235,8 @@ def plan_platform(
     env = cfg.environment
     out = f"{cfg.out}/{platform}"
     steps: list = []
+    run_apk = ""  # an installable Android APK this run's release part builds
+    run_apk_name = ""
     release = cfg.app and platform in cfg.platforms
     want_e2e = cfg.e2e and platform in cfg.e2e_platforms
     e2e_profile = resolve_profile(eas, f"e2e-{env}") if want_e2e else None
@@ -278,6 +281,9 @@ def plan_platform(
                 hash_,
                 cfg.asc_key,
             )
+
+        if platform == "android":
+            run_apk, run_apk_name = (main, env) if ext == "apk" else (apk, f"{env}-apk")
 
         if cfg.firebase_groups:
             target = ""
@@ -358,7 +364,15 @@ def plan_platform(
         name = f"e2e-{env}"
         path = f"{out}/e2e/app.{artifact_ext(e2e_profile, platform)}"
         url = e2e_build_url(builds, platform, hash_)
-        if url:
+        if run_apk:
+            steps.append(
+                Step(
+                    f"copy {run_apk_name} for e2e",
+                    ["cp", run_apk, path],
+                    output=path,
+                )
+            )
+        elif url:
             steps.append(
                 Step(
                     f"download {name}",

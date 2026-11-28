@@ -389,6 +389,61 @@ class PlanTest(unittest.TestCase):
             ],
         )
 
+    def test_e2e_reuses_main_apk_built_this_run(self):
+        steps = cd_app.plan_platform(cfg(e2e=True), EAS, "android", H, [])
+        self.assertEqual(
+            names(steps), ["build develop", "upload develop", "copy develop for e2e"]
+        )
+        self.assertEqual(
+            steps[-1].argv,
+            ["cp", "/out/android/develop.apk", "/out/android/e2e/app.apk"],
+        )
+        self.assertEqual(steps[-1].output, "/out/android/e2e/app.apk")
+
+    def test_e2e_reuses_sideload_apk(self):
+        c = cfg(e2e=True, environment="master", message="v1.4.0", sideload_apk=True)
+        steps = cd_app.plan_platform(c, EAS, "android", H, [])
+        self.assertEqual(
+            names(steps),
+            [
+                "build master",
+                "upload master",
+                "build master-apk",
+                "upload master-apk",
+                "copy master-apk for e2e",
+            ],
+        )
+        self.assertEqual(
+            steps[-1].argv,
+            ["cp", "/out/android/master-apk.apk", "/out/android/e2e/app.apk"],
+        )
+
+    def test_e2e_without_release_still_builds(self):
+        steps = cd_app.plan_platform(cfg(app=False, e2e=True), EAS, "android", H, [])
+        self.assertEqual(names(steps), ["build e2e-develop", "upload e2e-develop"])
+
+    def test_e2e_aab_without_sideload_still_downloads(self):
+        c = cfg(e2e=True, environment="master", message="v1.4.0")
+        steps = cd_app.plan_platform(c, EAS, "android", H, [build()])
+        self.assertEqual(
+            names(steps),
+            ["ota", "build master", "upload master", "download e2e-master"],
+        )
+
+    def test_e2e_ios_unchanged(self):
+        steps = cd_app.plan_platform(
+            cfg(e2e=True, sideload_apk=True), EAS, "ios", H, []
+        )
+        self.assertEqual(
+            names(steps),
+            [
+                "build develop",
+                "upload develop",
+                "build e2e-develop",
+                "upload e2e-develop",
+            ],
+        )
+
     def test_e2e_only_skips_the_release(self):
         steps = cd_app.plan_platform(
             cfg(app=False, e2e=True), EAS, "android", H, [build()]
@@ -464,7 +519,8 @@ class DryRunTest(unittest.TestCase):
             r.stdout,
         )
         self.assertIn("[dry run] doppler run -- eas update --channel develop", r.stdout)
-        self.assertIn("[dry run] curl -fsSL", r.stdout)
+        self.assertIn("[dry run] cp ", r.stdout)
+        self.assertNotIn("curl -fsSL", r.stdout)
 
     def test_no_build(self):
         r = self.run_cli([])
@@ -473,10 +529,8 @@ class DryRunTest(unittest.TestCase):
             "decision: no finished build of this fingerprint: build only", r.stdout
         )
         self.assertNotIn("eas update", r.stdout)
-        self.assertIn(
-            "[dry run] doppler run -- eas build --local --platform android --profile e2e-develop",
-            r.stdout,
-        )
+        self.assertIn("[dry run] cp ", r.stdout)
+        self.assertNotIn("--profile e2e-develop", r.stdout)
 
 
 class FailureTest(unittest.TestCase):
@@ -666,10 +720,27 @@ class ModesTest(unittest.TestCase):
             (root / "builds.json").write_text(json.dumps([build()]))
             out = root / "gh_output"
             r = subprocess.run(
-                [sys.executable, str(SCRIPT), "run", "--dry-run", "--environment", "develop",
-                 "--message", "m", "--platforms", "android", "--out", str(root / "out"),
-                 "--fingerprint", "android=" + H, "--builds-json", "android=" + str(root / "builds.json")],
-                cwd=root, capture_output=True, text=True,
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "run",
+                    "--dry-run",
+                    "--environment",
+                    "develop",
+                    "--message",
+                    "m",
+                    "--platforms",
+                    "android",
+                    "--out",
+                    str(root / "out"),
+                    "--fingerprint",
+                    "android=" + H,
+                    "--builds-json",
+                    "android=" + str(root / "builds.json"),
+                ],
+                cwd=root,
+                capture_output=True,
+                text=True,
                 env={"PATH": "/nonexistent", "GITHUB_OUTPUT": str(out)},
             )
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
