@@ -5,9 +5,9 @@ name: Wiki
 #
 # Update runs (init: false) squash-merge the PR themselves, only when every changed
 # path is under openwiki/ (plus .changeset/ when `changeset` is true) and a diff-only
-# secret scan is clean. The PR's commit runs CI (rulesets need its checks); the squash
-# merge carries [skip ci] so app repos' push-to-main deploys don't fire for docs, until
-# INF-1983 stage 4 moves deploys to rc tags. Any guard or scan failure leaves the PR
+# secret scan is clean. The PR's commit runs CI (rulesets need its checks), and so
+# does the squash merge on the default branch: the release button needs a green
+# `ci / gate` on main's HEAD (INF-1983 stage 4). Any guard or scan failure leaves the PR
 # open and fails the run. Init runs (init: true) never merge: the setup PR also adds
 # the AGENTS.md / CLAUDE.md pointers, which a human reviews.
 #
@@ -410,9 +410,9 @@ jobs:
             echo "::error::PR contains paths outside the allowlist, not merging:$bad"
             exit 1
           fi
-          # [skip ci] on the merge only: app repos still deploy on every push to main
-          # until INF-1983 stage 4, which drops this. The PR's own commit runs CI.
-          subject="docs: update OpenWiki [skip ci]"
+          # No [skip ci]: the merge must report `ci / gate` so the release button works
+          # right after a wiki merge (INF-1983 stage 4). Deploys only run from the buttons.
+          subject="docs: update OpenWiki"
           # Right after the push GitHub is still computing mergeability, and a merge then
           # fails as "cannot be cleanly created". Wait up to ~2 minutes for a result.
           state=UNKNOWN
